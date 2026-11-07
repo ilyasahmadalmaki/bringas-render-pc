@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.mp4
+*.mp3
+*.wav
+*.flac
+*.m4a
+output/
+out/
+*_used/
+used_log.txt
+bringas_render_*/
+concat_list.txt
+video_concat_list.txt

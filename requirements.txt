@@ -1,0 +1,3 @@
+# Bringas Render PC — stdlib only, no third-party dependencies.
+# Python 3.10+ with Tkinter (bundled with standard Windows Python installs).
+# ffmpeg/ffprobe are external binaries, not Python packages (see README.md).
