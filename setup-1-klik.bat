@@ -13,6 +13,12 @@ REM         folder ini (sebelah .exe nanti).
 REM   [3/4] Install PyInstaller otomatis (pip).
 REM   [4/4] Build BringasRenderPC.exe otomatis, lalu dibuka.
 REM
+REM  Download pakai curl dulu (bawaan Windows 10/11, tahan
+REM  file besar + retry otomatis 3x). Kalau curl gagal, baru
+REM  fallback ke PowerShell dengan timeout dimatikan
+REM  (-TimeoutSec 0) supaya file ~100 MB tidak "timed out"
+REM  di tengah jalan seperti Invoke-WebRequest bawaan.
+REM
 REM  Yang lo butuhkan cuma: Windows 10/11 + internet.
 REM  Tidak perlu install Python manual, tidak perlu centang
 REM  "Add Python to PATH" manual — script ini yang urus.
@@ -50,7 +56,7 @@ python --version >nul 2>&1
 if not errorlevel 1 goto :python_ok
 
 echo  - winget gagal / tidak ada, download installer Python langsung...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe' -OutFile '%TEMP%\python-setup.exe'"
+call :download "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" "%TEMP%\python-setup.exe"
 if errorlevel 1 (
   echo.
   echo GAGAL download installer Python. Cek internet lo, lalu
@@ -82,11 +88,12 @@ echo [2/4] Cek ffmpeg...
 if exist ffmpeg.exe if exist ffprobe.exe goto :ffmpeg_ok
 
 echo ffmpeg belum ada, lagi download otomatis dari gyan.dev...
-echo (File sekitar 100 MB, jangan ditutup.)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile '%TEMP%\ffmpeg.zip'"
+echo (File sekitar 100 MB, jangan ditutup. Kalau internet lambat
+echo  ini bisa 3-5 menit — itu normal, bukan stuck.)
+call :download "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" "%TEMP%\ffmpeg.zip"
 if errorlevel 1 (
   echo.
-  echo GAGAL download ffmpeg. Cek internet lo, lalu
+  echo GAGAL download ffmpeg setelah 3x coba. Cek internet lo, lalu
   echo double-click file ini lagi.
   pause
   exit /b 1
@@ -160,3 +167,30 @@ echo.
 echo Membuka aplikasi...
 start "" "%~dp0BringasRenderPC.exe"
 pause
+exit /b 0
+
+REM ============================================================
+REM  :download  — download 1 file dengan retry.
+REM  Pakai:  call :download "URL" "path\output"
+REM  Urutan: curl dulu (retry 3x, progress kelihatan),
+REM  fallback PowerShell dengan -TimeoutSec 0.
+REM  Return 0 kalau file ada dan ukurannya lebih dari 0.
+REM ============================================================
+:download
+set "DL_URL=%~1"
+set "DL_OUT=%~2"
+del "%DL_OUT%" >nul 2>&1
+where curl >nul 2>&1
+if not errorlevel 1 (
+  echo  - Download pakai curl (retry otomatis 3x)...
+  curl -L --retry 3 --retry-delay 5 --connect-timeout 30 -o "%DL_OUT%" "%DL_URL%"
+  if exist "%DL_OUT%" (
+    for %%A in ("%DL_OUT%") do if %%~zA gtr 0 exit /b 0
+  )
+  echo  - curl gagal, coba PowerShell...
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '%DL_URL%' -OutFile '%DL_OUT%' -TimeoutSec 0 -UseBasicParsing"
+if exist "%DL_OUT%" (
+  for %%A in ("%DL_OUT%") do if %%~zA gtr 0 exit /b 0
+)
+exit /b 1
