@@ -12,26 +12,47 @@ Repo: `ilyasahmadalmaki/bringas-render-pc` (branch `main`)
 - Video pendek-pendek dari folder digabung acak sampai sepanjang audio.
 - Audio dari 1 file atau dari 1 folder (digabung semua).
 
-## Download .exe (paling gampang)
+## Cara paling gampang (untuk yang awam) — Setup 1 Klik
 
-Tidak perlu install Python. Setiap push ke `main` otomatis dibuild
-di GitHub Actions (Windows) jadi `BringasRenderPC.exe`:
+Lo tidak perlu install Python manual, tidak perlu download ffmpeg
+manual, tidak perlu buka command prompt. Cukup:
 
-1. Buka tab **Actions** di repo ini → klik run terbaru yang hijau
-   ("Build Windows EXE") → download artifact
-   **BringasRenderPC-windows** (isinya `BringasRenderPC.exe`).
-2. Kalau ada tag `v*` (misal `v1.0.0`), .exe-nya juga ada di tab
-   **Releases**.
-3. Taruh `ffmpeg.exe` + `ffprobe.exe` (download dari
+1. Download repo ini (tombol hijau **Code → Download ZIP**),
+   extract ke satu folder.
+2. Double-click **`setup-1-klik.bat`**, tunggu sampai ada tulisan
+   **SELESAI**. Jangan ditutup di tengah jalan.
+3. File ini otomatis, berurutan: install Python 3.12 (kalau belum
+   ada, lewat winget — kalau winget gagal, download installer dari
+   python.org lalu install silent), download ffmpeg dari gyan.dev
+   lalu taruh `ffmpeg.exe` + `ffprobe.exe` di folder ini, install
+   PyInstaller, build `BringasRenderPC.exe`, lalu aplikasinya
+   langsung dibuka.
+4. Berikutnya tinggal double-click `BringasRenderPC.exe` saja.
+
+Yang dibutuhkan cuma Windows 10/11 + internet. Tidak butuh admin.
+Kalau internet putus di tengah jalan, double-click lagi file yang
+sama — langkah yang sudah selesai tidak diulang dari nol.
+
+## Download .exe (kalau Python sudah ada)
+
+Kalau Python sudah terinstall di PC lo, lebih cepat build sendiri:
+
+1. Double-click `build_exe.bat` (butuh Python + `pip install
+   pyinstaller`, script-nya yang urus sisanya, hasil di
+   `dist\BringasRenderPC.exe`).
+2. Taruh `ffmpeg.exe` + `ffprobe.exe` (download dari
    https://www.gyan.dev/ffmpeg/builds/, `ffmpeg-release-full.zip`)
    di folder yang **sama** dengan `BringasRenderPC.exe`, atau di PATH.
    ffmpeg **tidak** dibundel ke dalam .exe (ukurannya ~80 MB sendiri),
    jadi ini tetap wajib.
-4. Double-click `BringasRenderPC.exe`. Selesai.
+3. Double-click `BringasRenderPC.exe`. Selesai.
 
-Alternatif: build .exe sendiri di PC lo dengan double-click
-`build_exe.bat` (butuh Python + `pip install pyinstaller`, script-nya
-yang urus sisanya, hasil di `dist\BringasRenderPC.exe`).
+Catatan: GitHub Actions **disabled** untuk repo ini (pesan GitHub:
+"GitHub Actions is currently disabled for this repository"), jadi
+tidak ada auto-build .exe dari Actions. File workflow-nya ada di
+`.github/workflows/build-windows.yml` kalau nanti Actions diaktifkan
+lagi, tapi jalur yang jalan sekarang adalah `setup-1-klik.bat` /
+`build_exe.bat` di atas.
 
 ## Install dari source di Windows
 
@@ -128,7 +149,8 @@ semuanya di-encode ke AAC 320k.
 | `ffmpeg_utils.py` | Semua logika ffmpeg + ordering/pick/used (tanpa GUI) |
 | `test_logic.py` | Self-test logika + integrasi ffmpeg (`python3 test_logic.py`) |
 | `run.bat` | Launcher Windows (cek python + ffmpeg, lalu jalan) |
-| `build_exe.bat` | Build `BringasRenderPC.exe` lokal di Windows (PyInstaller) |
+| `setup-1-klik.bat` | **Setup 1 klik untuk awam:** auto-install Python + auto-download ffmpeg + install PyInstaller + build .exe, lalu buka aplikasinya |
+| `build_exe.bat` | Build `BringasRenderPC.exe` lokal di Windows (PyInstaller) — untuk yang Python-nya sudah ada |
 | `.github/workflows/build-windows.yml` | Build .exe otomatis di GitHub Actions |
 | `requirements.txt` | Kosong — stdlib only |
 | `.gitignore` | Abaikan output, `*_used/`, temp, `__pycache__` |
