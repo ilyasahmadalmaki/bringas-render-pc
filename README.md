@@ -12,7 +12,28 @@ Repo: `ilyasahmadalmaki/bringas-render-pc` (branch `main`)
 - Video pendek-pendek dari folder digabung acak sampai sepanjang audio.
 - Audio dari 1 file atau dari 1 folder (digabung semua).
 
-## Install di Windows
+## Download .exe (paling gampang)
+
+Tidak perlu install Python. Setiap push ke `main` otomatis dibuild
+di GitHub Actions (Windows) jadi `BringasRenderPC.exe`:
+
+1. Buka tab **Actions** di repo ini → klik run terbaru yang hijau
+   ("Build Windows EXE") → download artifact
+   **BringasRenderPC-windows** (isinya `BringasRenderPC.exe`).
+2. Kalau ada tag `v*` (misal `v1.0.0`), .exe-nya juga ada di tab
+   **Releases**.
+3. Taruh `ffmpeg.exe` + `ffprobe.exe` (download dari
+   https://www.gyan.dev/ffmpeg/builds/, `ffmpeg-release-full.zip`)
+   di folder yang **sama** dengan `BringasRenderPC.exe`, atau di PATH.
+   ffmpeg **tidak** dibundel ke dalam .exe (ukurannya ~80 MB sendiri),
+   jadi ini tetap wajib.
+4. Double-click `BringasRenderPC.exe`. Selesai.
+
+Alternatif: build .exe sendiri di PC lo dengan double-click
+`build_exe.bat` (butuh Python + `pip install pyinstaller`, script-nya
+yang urus sisanya, hasil di `dist\BringasRenderPC.exe`).
+
+## Install dari source di Windows
 
 1. Install **Python 3.10+** dari python.org. Centang **"Add Python to PATH"**.
 2. Download **ffmpeg** dari https://www.gyan.dev/ffmpeg/builds/
@@ -107,6 +128,8 @@ semuanya di-encode ke AAC 320k.
 | `ffmpeg_utils.py` | Semua logika ffmpeg + ordering/pick/used (tanpa GUI) |
 | `test_logic.py` | Self-test logika + integrasi ffmpeg (`python3 test_logic.py`) |
 | `run.bat` | Launcher Windows (cek python + ffmpeg, lalu jalan) |
+| `build_exe.bat` | Build `BringasRenderPC.exe` lokal di Windows (PyInstaller) |
+| `.github/workflows/build-windows.yml` | Build .exe otomatis di GitHub Actions |
 | `requirements.txt` | Kosong — stdlib only |
 | `.gitignore` | Abaikan output, `*_used/`, temp, `__pycache__` |
 | `LICENSE` | MIT |
