@@ -21,11 +21,10 @@ REM  di tengah jalan seperti Invoke-WebRequest bawaan.
 REM
 REM  Yang lo butuhkan cuma: Windows 10/11 + internet.
 REM  Tidak perlu install Python manual, tidak perlu centang
-REM  "Add Python to PATH" manual — script ini yang urus.
+REM  "Add Python to PATH" manual - script ini yang urus.
 REM  Tidak butuh admin (install Python user-level).
 REM ============================================================
 setlocal
-chcp 65001 >nul
 title Bringas Render PC - Setup 1 Klik
 cd /d "%~dp0"
 
@@ -89,7 +88,7 @@ if exist ffmpeg.exe if exist ffprobe.exe goto :ffmpeg_ok
 
 echo ffmpeg belum ada, lagi download otomatis dari gyan.dev...
 echo (File sekitar 100 MB, jangan ditutup. Kalau internet lambat
-echo  ini bisa 3-5 menit — itu normal, bukan stuck.)
+echo  ini bisa 3-5 menit - itu normal, bukan stuck.)
 call :download "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" "%TEMP%\ffmpeg.zip"
 if errorlevel 1 (
   echo.
@@ -170,7 +169,7 @@ pause
 exit /b 0
 
 REM ============================================================
-REM  :download  — download 1 file dengan retry.
+REM  :download  - download 1 file dengan retry.
 REM  Pakai:  call :download "URL" "path\output"
 REM  Urutan: curl dulu (retry 3x, progress kelihatan),
 REM  fallback PowerShell dengan -TimeoutSec 0.

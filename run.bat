@@ -1,5 +1,5 @@
 @echo off
-REM Bringas Render PC — Windows launcher
+REM Bringas Render PC - Windows launcher
 REM Cek Python + ffmpeg, lalu jalankan GUI.
 setlocal
 title Bringas Render PC
