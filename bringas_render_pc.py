@@ -21,14 +21,18 @@ from pathlib import Path
 
 import ffmpeg_utils as fu
 
-BG = "#12141a"
-PANEL = "#1a1d26"
-FG = "#e8eaf0"
-MUTED = "#9aa3b2"
-ACCENT = "#22c55e"
-ACCENT2 = "#38bdf8"
-WARN = "#f59e0b"
-DANGER = "#ef4444"
+# HYDRA TEAM BRINGAS — dark neon cyberpunk: near-black blue, cyan + magenta
+BG = "#07090d"
+PANEL = "#0e131c"
+BORDER = "#22314a"
+FG = "#e8f1ff"
+MUTED = "#7d8aa3"
+ACCENT = "#00e5ff"      # neon cyan — primary
+ACCENT2 = "#ff2d95"     # neon magenta — secondary
+PURPLE = "#a855f7"
+WARN = "#f5a524"
+DANGER = "#ff4d5e"
+OK = "#2ee59d"
 
 AUDIO_EXTS = fu.AUDIO_EXTS
 VIDEO_EXTS = fu.VIDEO_EXTS
@@ -37,7 +41,7 @@ VIDEO_EXTS = fu.VIDEO_EXTS
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Bringas Render PC")
+        self.title("Bringas Render PC — HYDRA TEAM BRINGAS")
         self.geometry("980x820")
         self.configure(bg=BG)
         self.log_q: queue.Queue = queue.Queue()
@@ -80,19 +84,41 @@ class App(tk.Tk):
             pass
         s.configure("TFrame", background=BG)
         s.configure("TLabelframe", background=PANEL, foreground=FG,
-                    bordercolor="#2a2f3d")
-        s.configure("TLabelframe.Label", background=PANEL, foreground=FG)
-        s.configure("TLabel", background=BG, foreground=FG)
+                    bordercolor=BORDER, borderwidth=1)
+        s.configure("TLabelframe.Label", background=PANEL, foreground=ACCENT,
+                    font=("Segoe UI", 10, "bold"))
         s.configure("TLabel", background=PANEL, foreground=FG)
-        s.configure("TRadiobutton", background=PANEL, foreground=FG)
-        s.configure("TCheckbutton", background=PANEL, foreground=FG)
-        s.configure("TButton", background="#2a2f3d", foreground=FG)
-        s.configure("Accent.TButton", background=ACCENT, foreground="#06230f")
-        s.configure("TEntry", fieldbackground="#0e1117", foreground=FG)
-        s.configure("Treeview", background="#0e1117", foreground=FG,
-                    fieldbackground="#0e1117", rowheight=22)
-        s.configure("Treeview.Heading", background="#2a2f3d", foreground=FG)
-        s.configure("Horizontal.TProgressbar", background=ACCENT)
+        s.configure("TRadiobutton", background=PANEL, foreground=FG,
+                    indicatorcolor=ACCENT)
+        s.configure("TCheckbutton", background=PANEL, foreground=FG,
+                    indicatorcolor=ACCENT)
+        s.configure("TButton", background="#131c2b", foreground=FG,
+                    bordercolor=BORDER, borderwidth=1, padding=4)
+        s.map("TButton",
+              background=[("active", "#1e2c44"), ("disabled", "#0e131c")],
+              foreground=[("disabled", MUTED)])
+        s.configure("Accent.TButton", background=ACCENT, foreground="#02141a",
+                    font=("Segoe UI", 12, "bold"), padding=10,
+                    borderwidth=0)
+        s.map("Accent.TButton",
+              background=[("active", "#5ff0ff"), ("disabled", "#12303a")],
+              foreground=[("disabled", "#5b7a86")])
+        s.configure("TEntry", fieldbackground="#080c12", foreground=FG,
+                    bordercolor=BORDER, insertcolor=ACCENT)
+        s.configure("Treeview", background="#080c12", foreground=FG,
+                    fieldbackground="#080c12", rowheight=24,
+                    bordercolor=BORDER)
+        s.configure("Treeview.Heading", background="#131c2b", foreground=ACCENT,
+                    font=("Segoe UI", 9, "bold"))
+        s.map("Treeview",
+              background=[("selected", ACCENT)],
+              foreground=[("selected", "#02141a")])
+        s.configure("Horizontal.TProgressbar", background=ACCENT,
+                    troughcolor="#080c12", bordercolor=BORDER, thickness=14)
+        s.configure("Vertical.TScrollbar", background="#1c2942",
+                    troughcolor="#080c12", arrowcolor=ACCENT,
+                    bordercolor="#080c12")
+        s.configure("TSeparator", background=ACCENT)
 
     def _build_ui(self):
         self._style()
@@ -123,11 +149,14 @@ class App(tk.Tk):
         canvas.bind("<Configure>", _on_canvas_configure)
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        title = tk.Label(root, text="🎬 Bringas Render PC",
-                         font=("Segoe UI", 16, "bold"), bg=BG, fg=FG)
+        title = tk.Label(root, text="⚡ BRINGAS RENDER PC",
+                         font=("Consolas", 20, "bold"), bg=BG, fg=ACCENT)
         title.pack(anchor="w")
+        tk.Label(root, text="HYDRA TEAM BRINGAS  •  PERMUDAH HIDUPMU",
+                 font=("Consolas", 10, "bold"), bg=BG, fg=ACCENT2).pack(anchor="w", pady=(0, 2))
         tk.Label(root, text="Video + Audio untuk YouTube — audio kelas terbaik (AAC 320k, 48 kHz, -14 LUFS)",
                  bg=BG, fg=MUTED).pack(anchor="w", pady=(0, 8))
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(0, 8))
 
         # ---- Video ----
         vf = ttk.LabelFrame(root, text="1 — Video", padding=8)
@@ -233,9 +262,12 @@ class App(tk.Tk):
         self.progress = ttk.Progressbar(run, mode="indeterminate", length=200)
         self.progress.pack(side="left", padx=8)
 
-        self.log_text = tk.Text(root, height=10, bg="#0e1117", fg="#c9d1d9",
-                                font=("Consolas", 9))
+        self.log_text = tk.Text(root, height=10, bg="#04060a", fg="#39ff9d",
+                                font=("Consolas", 9), insertbackground=ACCENT,
+                                selectbackground="#123043", selectforeground=FG)
         self.log_text.pack(fill="both", expand=True, pady=4)
+        tk.Label(root, text="◆ HYDRA TEAM BRINGAS — PERMUDAH HIDUPMU ◆",
+                 font=("Consolas", 9, "bold"), bg=BG, fg=ACCENT2).pack(anchor="center", pady=(4, 0))
         self._log("Bringas Render PC siap. Pilih video + audio, lalu Render.")
         self._detect_gpu()
 
