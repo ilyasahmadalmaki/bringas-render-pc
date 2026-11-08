@@ -468,7 +468,7 @@ class App(tk.Tk):
             fp = self.ffprobe_path.get() or fu.find_ffprobe()
 
             # ---- Audio ----
-            log("Langkah 1/3: siapkan audio…")
+            log("Langkah 1/2: siapkan audio…")
             if self.audio_mode.get() == "file":
                 src = self.audio_file.get()
                 if not src:
@@ -491,7 +491,7 @@ class App(tk.Tk):
             log(f"Audio siap: {audio_dur:.1f}s -> {audio_path}")
 
             # ---- Video ----
-            log("Langkah 2/3: gabung video…")
+            log("Langkah 2/2: gabung video…")
             if self.video_mode.get() == "file":
                 v = self.video_file.get()
                 if not v:
@@ -514,13 +514,9 @@ class App(tk.Tk):
             if not ok:
                 raise RuntimeError("ffmpeg gagal membuat video output.")
 
-            # ---- Verify ----
-            log("Langkah 3/3: verifikasi output…")
-            good, msg = fu.verify_output(out_path, audio_dur, ffprobe=fp)
-            log(f"Verifikasi: {msg}")
-            if not good:
-                raise RuntimeError(f"Verifikasi output GAGAL: {msg}")
-
+            # No output verification (user's call: "sikat aja") — ffmpeg
+            # exiting 0 + the file existing is enough; a probe quirk
+            # must never fail an otherwise finished render.
             log(f"✅ SELESAI: {out_path}")
             self.after(0, lambda: messagebox.showinfo(
                 "Selesai", f"Output berhasil:\n{out_path}"))
