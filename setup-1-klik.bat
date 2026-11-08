@@ -73,7 +73,7 @@ if errorlevel 1 (
   echo.
   echo GAGAL install Python. Coba restart PC lo sekali, lalu
   echo double-click file ini lagi. Kalau tetap gagal, install
-  echo manual dari python.org (centang "Add Python to PATH").
+  echo manual dari python.org, centang Add Python to PATH.
   pause
   exit /b 1
 )
@@ -180,16 +180,14 @@ set "DL_URL=%~1"
 set "DL_OUT=%~2"
 del "%DL_OUT%" >nul 2>&1
 where curl >nul 2>&1
-if not errorlevel 1 (
-  echo  - Download pakai curl (retry otomatis 3x)...
-  curl -L --retry 3 --retry-delay 5 --connect-timeout 30 -o "%DL_OUT%" "%DL_URL%"
-  if exist "%DL_OUT%" (
-    for %%A in ("%DL_OUT%") do if %%~zA gtr 0 exit /b 0
-  )
-  echo  - curl gagal, coba PowerShell...
-)
+if errorlevel 1 goto :dl_ps
+echo  - Download pakai curl, retry otomatis 3x...
+curl -L --retry 3 --retry-delay 5 --connect-timeout 30 -o "%DL_OUT%" "%DL_URL%"
+if exist "%DL_OUT%" goto :dl_check
+echo  - curl gagal, coba PowerShell...
+:dl_ps
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '%DL_URL%' -OutFile '%DL_OUT%' -TimeoutSec 0 -UseBasicParsing"
-if exist "%DL_OUT%" (
-  for %%A in ("%DL_OUT%") do if %%~zA gtr 0 exit /b 0
-)
+:dl_check
+if not exist "%DL_OUT%" exit /b 1
+for %%A in ("%DL_OUT%") do if %%~zA gtr 0 exit /b 0
 exit /b 1
