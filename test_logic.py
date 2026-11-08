@@ -184,6 +184,65 @@ def shutil_which(name):
     return shutil.which(name)
 
 
+def test_gpu_detection():
+    fake_all = (
+        "Encoders:\n"
+        " V..... = Video\n"
+        " ------\n"
+        " V..... libx264              libx264 H.264 / AVC (codec h264)\n"
+        " V..... h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)\n"
+        " V..... h264_qsv             Intel Quick Sync Video H.264 encoder (codec h264)\n"
+        " V..... h264_amf             AMD AMF H.264 Video Encoder (codec h264)\n"
+    )
+    check("gpu: prioritas NVENC saat ketiganya ada",
+          fu.parse_encoders_output(fake_all) == "h264_nvenc",
+          str(fu.parse_encoders_output(fake_all)))
+    check("gpu: daftar kandidat urut prioritas",
+          fu.parse_encoders_list(fake_all) == ["h264_nvenc", "h264_qsv", "h264_amf"],
+          str(fu.parse_encoders_list(fake_all)))
+    check("gpu: QSV saat NVENC tidak ada",
+          fu.parse_encoders_output(" V..... h264_qsv  Intel QSV (codec h264)\n"
+                                   " V..... h264_amf  AMD AMF (codec h264)\n") == "h264_qsv")
+    check("gpu: AMF saat hanya AMF",
+          fu.parse_encoders_output(" V..... h264_amf  AMD AMF (codec h264)\n") == "h264_amf")
+    check("gpu: None saat tidak ada hardware encoder",
+          fu.parse_encoders_output(" V..... libx264  libx264 (codec h264)\n") is None)
+    check("gpu: teks kosong -> None", fu.parse_encoders_output("") is None)
+
+
+def test_video_encoder_args():
+    check("gpu args: default = libx264 crf 18",
+          fu.video_encoder_args() == ["-c:v", "libx264", "-crf", "18",
+                                      "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+    nv = fu.video_encoder_args("h264_nvenc")
+    check("gpu args: NVENC pakai p4 + cq 19",
+          nv[:4] == ["-c:v", "h264_nvenc", "-preset", "p4"] and "-cq" in nv and "19" in nv,
+          str(nv))
+    check("gpu args: QSV pakai global_quality",
+          "-global_quality" in fu.video_encoder_args("h264_qsv"))
+    amf = fu.video_encoder_args("h264_amf")
+    check("gpu args: AMF pakai cqp",
+          "-rc" in amf and "cqp" in amf, str(amf))
+    check("gpu args: encoder asing -> fallback libx264",
+          fu.video_encoder_args("h264_foo") == fu.video_encoder_args())
+
+
+def test_detect_gpu_encoder_live():
+    # Runs against the real ffmpeg on this machine (if any). No GPU here
+    # is expected; the point is it never raises and caches consistently.
+    # Note: `ffmpeg -encoders` alone is NOT proof — this VM lists
+    # h264_nvenc but the 1-frame probe must reject it (no NVIDIA driver).
+    enc1 = fu.detect_gpu_encoder()
+    enc2 = fu.detect_gpu_encoder()
+    check("gpu detect: hasil valid (None atau encoder dikenal)",
+          enc1 is None or enc1 in fu._GPU_ENCODERS, str(enc1))
+    check("gpu detect: hasil konsisten (cache)", enc1 == enc2)
+    check("gpu detect: probe menolak encoder yang tidak dikenal",
+          fu._encoder_probe_ok(fu.find_ffmpeg(), "h264_tidak_ada") is False)
+    check("gpu detect: encoder terdaftar tapi tak bisa jalan -> None",
+          enc1 is None)
+
+
 def main():
     print("== Bringas Render PC — self test ==")
     with tempfile.TemporaryDirectory(prefix="bringas_test_") as tmp:
@@ -193,6 +252,9 @@ def main():
         test_pick_until_duration()
         test_used_folder_path()
         test_auto_output_name()
+        test_gpu_detection()
+        test_video_encoder_args()
+        test_detect_gpu_encoder_live()
         test_integration_ffmpeg(tmp)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
