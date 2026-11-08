@@ -147,6 +147,15 @@ class App(tk.Tk):
         ttk.Button(row2, text="Shuffle Preview", command=self._shuffle_preview).pack(side="left", padx=4)
         self.video_info = tk.Label(vf, text="Belum ada folder video dipilih.", bg=PANEL, fg=MUTED, anchor="w")
         self.video_info.pack(fill="x", pady=2)
+        self.use_gpu_var = tk.BooleanVar(value=True)
+        self._gpu_encoder = None
+        gpu_row = ttk.Frame(vf)
+        gpu_row.pack(fill="x", pady=(2, 0))
+        ttk.Checkbutton(gpu_row, text="Pakai GPU kalau tersedia (NVENC / Quick Sync / AMF)",
+                        variable=self.use_gpu_var,
+                        command=self._refresh_gpu_label).pack(side="left")
+        self.gpu_label = ttk.Label(gpu_row, text="GPU: mengecek…")
+        self.gpu_label.pack(side="left", padx=(8, 0))
 
         # ---- Audio ----
         af = ttk.LabelFrame(root, text="2 — Audio", padding=8)
@@ -225,6 +234,7 @@ class App(tk.Tk):
                                 font=("Consolas", 9))
         self.log_text.pack(fill="both", expand=True, pady=4)
         self._log("Bringas Render PC siap. Pilih video + audio, lalu Render.")
+        self._detect_gpu()
 
     # ------------------------------------------------------------- logging
     def _log(self, msg: str):
@@ -391,6 +401,26 @@ class App(tk.Tk):
             return sum(self._dur(f) for f in self.audio_files)
         return 0.0
 
+    # ------------------------------------------------------------- GPU
+    def _detect_gpu(self):
+        """Detect the hardware encoder once at startup (cached)."""
+        ff = self.ffmpeg_path.get() or fu.find_ffmpeg()
+        self._gpu_encoder = fu.detect_gpu_encoder(ff)
+        self._refresh_gpu_label()
+
+    def _refresh_gpu_label(self):
+        names = {"h264_nvenc": "NVIDIA NVENC",
+                 "h264_qsv": "Intel Quick Sync",
+                 "h264_amf": "AMD AMF"}
+        if not self.use_gpu_var.get():
+            self.gpu_label.config(text="GPU: dimatikan — render pakai CPU (libx264)")
+        elif self._gpu_encoder in names:
+            self.gpu_label.config(
+                text=f"GPU: {names[self._gpu_encoder]} — render pakai GPU")
+        else:
+            self.gpu_label.config(
+                text="GPU: tidak terdeteksi — render pakai CPU (libx264)")
+
     def _shuffle_preview(self):
         if not self.video_clips:
             self._scan_video_folder()
@@ -466,6 +496,9 @@ class App(tk.Tk):
             log(f"Workdir: {workdir}")
             ff = self.ffmpeg_path.get() or fu.find_ffmpeg()
             fp = self.ffprobe_path.get() or fu.find_ffprobe()
+            # GPU encoder for the video re-encode (cached detection).
+            encoder = (fu.detect_gpu_encoder(ff)
+                       if self.use_gpu_var.get() else None)
 
             # ---- Audio ----
             log("Langkah 1/2: siapkan audio…")
@@ -509,8 +542,13 @@ class App(tk.Tk):
                 log(f"Video folder: ambil {len(picked)} klip "
                     f"({dupes} duplikat), total {total:.1f}s "
                     f"(target {audio_dur:.1f}s)")
+                if encoder:
+                    log(f"GPU terdeteksi: {encoder} — re-encode pakai GPU")
+                else:
+                    log("GPU tidak dipakai — re-encode pakai CPU (libx264)")
                 ok = fu.build_video_folder(picked, audio_path, audio_dur,
-                                           out_path, workdir, log=log, ffmpeg=ff)
+                                           out_path, workdir, log=log, ffmpeg=ff,
+                                           encoder=encoder)
             if not ok:
                 raise RuntimeError("ffmpeg gagal membuat video output.")
 
