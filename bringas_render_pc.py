@@ -59,6 +59,11 @@ class App(tk.Tk):
         self.audio_files: list[str] = []
         self.pin_order: list[str] = []
         self.audio_lufs: dict[str, float | None] = {}
+        # Duration cache (per session): ffprobe spawns a new process per
+        # file, and every list/preview refresh used to re-probe ALL files
+        # (one pin click = 2x files probes). Durations never change, so
+        # probe each path once and reuse it.
+        self._dur_cache: dict[str, float] = {}
         # Video folder state
         self.video_clips: list[tuple[str, float]] = []  # (path, duration)
         self.video_stock_total = 0.0
@@ -250,6 +255,13 @@ class App(tk.Tk):
             self.out_name.set(fu.auto_output_name(v, a))
 
     # ------------------------------------------------------------- audio list
+    def _dur(self, path: str) -> float:
+        """Duration of one file, probed once per session (see _dur_cache)."""
+        if path not in self._dur_cache:
+            self._dur_cache[path] = fu.probe_duration(
+                path, ffprobe=self.ffprobe_path.get())
+        return self._dur_cache[path]
+
     def _scan_audio_folder(self):
         folder = self.audio_folder.get()
         if not folder or not os.path.isdir(folder):
@@ -275,7 +287,7 @@ class App(tk.Tk):
         ordered = self._ordered_audio()
         pin_no = {p: i + 1 for i, p in enumerate(self.pin_order)}
         for f in ordered:
-            dur = fu.probe_duration(f, ffprobe=self.ffprobe_path.get())
+            dur = self._dur(f)
             lufs = self.audio_lufs.get(f)
             self.tree.insert("", "end", iid=f, values=(
                 os.path.basename(f), f"{dur:.1f}s",
@@ -329,7 +341,7 @@ class App(tk.Tk):
                 continue
             if os.path.abspath(str(p.parent)) == os.path.abspath(used):
                 continue
-            dur = fu.probe_duration(str(p), ffprobe=self.ffprobe_path.get())
+            dur = self._dur(str(p))
             if dur > 0:
                 clips.append((str(p), dur))
         self.video_clips = clips
@@ -342,10 +354,9 @@ class App(tk.Tk):
 
     def _audio_total_duration(self) -> float:
         if self.audio_mode.get() == "file" and self.audio_file.get():
-            return fu.probe_duration(self.audio_file.get(), ffprobe=self.ffprobe_path.get())
+            return self._dur(self.audio_file.get())
         if self.audio_mode.get() == "folder":
-            return sum(fu.probe_duration(f, ffprobe=self.ffprobe_path.get())
-                       for f in self.audio_files)
+            return sum(self._dur(f) for f in self.audio_files)
         return 0.0
 
     def _shuffle_preview(self):
@@ -369,7 +380,7 @@ class App(tk.Tk):
     def _refresh_preview(self):
         audio_dur = 0.0
         if self.audio_mode.get() == "file" and self.audio_file.get():
-            audio_dur = fu.probe_duration(self.audio_file.get(), ffprobe=self.ffprobe_path.get())
+            audio_dur = self._dur(self.audio_file.get())
         elif self.audio_mode.get() == "folder" and self.audio_files:
             # Avoid re-probing every file on each refresh if many files;
             # probe is fast (ffprobe) but keep it simple in v1.
