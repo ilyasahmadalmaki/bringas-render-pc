@@ -215,6 +215,102 @@ def probe_specs(path: str, ffprobe: Optional[str] = None) -> MediaInfo:
 
 
 # --------------------------------------------------------------------------
+# GPU detection (NVENC / Quick Sync / AMF) — faster re-encode when present
+# --------------------------------------------------------------------------
+
+# Priority order: NVIDIA NVENC first (most common on Windows desktops),
+# then Intel Quick Sync, then AMD AMF.
+_GPU_ENCODERS = ("h264_nvenc", "h264_qsv", "h264_amf")
+
+# Cache per ffmpeg binary path: detection spawns ffmpeg once per binary.
+_GPU_CACHE: dict = {}
+
+
+def parse_encoders_list(text: str) -> List[str]:
+    """Hardware H.264 encoders in `ffmpeg -encoders` output, in
+    priority order (NVENC > QSV > AMF). Pure function, easy to test."""
+    found = set()
+    for line in (text or "").splitlines():
+        for tok in line.split():
+            if tok in _GPU_ENCODERS:
+                found.add(tok)
+    return [name for name in _GPU_ENCODERS if name in found]
+
+
+def parse_encoders_output(text: str) -> Optional[str]:
+    """Best hardware H.264 encoder found in `ffmpeg -encoders` output,
+    or None."""
+    lst = parse_encoders_list(text)
+    return lst[0] if lst else None
+
+
+def _encoder_probe_ok(ffmpeg: str, encoder: str) -> bool:
+    """True if `encoder` actually works on this machine.
+
+    `ffmpeg -encoders` only lists compiled-in encoders — NVENC is
+    listed even without an NVIDIA GPU, so a tiny 1-frame encode is
+    the real test (fails fast without the driver/hardware).
+    """
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-y",
+             "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+             "-frames:v", "1", "-c:v", encoder, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30,
+            **_no_window_kwargs())
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def detect_gpu_encoder(ffmpeg: Optional[str] = None) -> Optional[str]:
+    """Detect the best hardware H.264 encoder this ffmpeg supports
+    AND that actually works on this machine.
+
+    Each candidate from `ffmpeg -encoders` is verified with a tiny
+    1-frame encode before it is trusted. Runs once per ffmpeg path
+    (cached). Never raises — any failure means CPU fallback.
+    """
+    ff = find_ffmpeg(ffmpeg)
+    if ff in _GPU_CACHE:
+        return _GPU_CACHE[ff]
+    result: Optional[str] = None
+    try:
+        r = subprocess.run([ff, "-hide_banner", "-encoders"],
+                           capture_output=True, text=True, timeout=30,
+                           **_no_window_kwargs())
+        for name in parse_encoders_list(r.stdout or ""):
+            if _encoder_probe_ok(ff, name):
+                result = name
+                break
+    except Exception:
+        result = None
+    _GPU_CACHE[ff] = result
+    return result
+
+
+def video_encoder_args(encoder: Optional[str] = None) -> List[str]:
+    """ffmpeg video-encode flags for the chosen encoder.
+
+    None (or unknown) -> CPU libx264 crf 18 (current quality bar).
+    GPU encoders use a comparable constant-quality setting:
+    NVENC p4 + CQ 19, Quick Sync medium + ICQ 19, AMF balanced + CQP 19.
+    """
+    if encoder == "h264_nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19",
+                "-pix_fmt", "yuv420p"]
+    if encoder == "h264_qsv":
+        return ["-c:v", "h264_qsv", "-preset", "medium",
+                "-global_quality", "19", "-pix_fmt", "yuv420p"]
+    if encoder == "h264_amf":
+        return ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                "-qp_i", "19", "-qp_p", "19", "-qp_b", "19",
+                "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p"]
+
+
+# --------------------------------------------------------------------------
 # Pure ordering logic (testable without ffmpeg)
 # --------------------------------------------------------------------------
 
@@ -535,12 +631,14 @@ def build_video_folder(picked: Sequence[Tuple[str, float]],
                        audio_path: str, audio_duration: float,
                        output_path: str, workdir: str,
                        log: LogFn = _noop_log,
-                       ffmpeg: Optional[str] = None) -> bool:
+                       ffmpeg: Optional[str] = None,
+                       encoder: Optional[str] = None) -> bool:
     """
     Folder video: picked = [(path, duration_used)] already trimmed so
     sum == audio_duration. If all clips share width/height/fps/codec,
     concat demuxer + -c:v copy. Else re-encode via concat filter to
-    1920x1080 30fps libx264 crf 18 preset veryfast yuv420p.
+    1920x1080 30fps — libx264 crf 18 by default, or a hardware encoder
+    (NVENC / Quick Sync / AMF) when `encoder` is given.
     -t audio_duration trims any overshoot on the last clip.
     """
     ff = find_ffmpeg(ffmpeg)
@@ -578,11 +676,12 @@ def build_video_folder(picked: Sequence[Tuple[str, float]],
         "".join(f"[v{i}]" for i in range(len(paths))) +
         f"concat=n={len(paths)}:v=1:a=0[vout]")
     filt = ";".join(filter_parts)
+    v_args = video_encoder_args(encoder)
+    log(f"Video folder: re-encode pakai {encoder or 'libx264 (CPU)'}")
     cmd = ([ff, "-hide_banner", "-y"] + inputs +
            ["-i", audio_path, "-filter_complex", filt,
-            "-map", "[vout]", "-map", f"{len(paths)}:a:0",
-            "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
-            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-map", "[vout]", "-map", f"{len(paths)}:a:0"] +
+           v_args + ["-c:a", "copy",
             "-t", f"{audio_duration:.3f}",
             "-movflags", "+faststart", output_path])
     r = _run(cmd, log)
