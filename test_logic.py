@@ -184,6 +184,25 @@ def shutil_which(name):
     return shutil.which(name)
 
 
+def test_unique_output_path(tmp):
+    p = os.path.join(tmp, "video.mp4")
+    check("unique: belum ada -> sama", fu.unique_output_path(p) == p)
+    Path(p).write_bytes(b"x")
+    check("unique: sudah ada -> (1)",
+          fu.unique_output_path(p) == os.path.join(tmp, "video (1).mp4"))
+    Path(os.path.join(tmp, "video (1).mp4")).write_bytes(b"x")
+    check("unique: (1) ada -> (2)",
+          fu.unique_output_path(p) == os.path.join(tmp, "video (2).mp4"))
+    # Explorer-style: nama yang sudah bernomor naik satu tingkat
+    p1 = os.path.join(tmp, "video (1).mp4")
+    check("unique: minta 'video (1)' lagi -> (2)",
+          fu.unique_output_path(p1) == os.path.join(tmp, "video (2).mp4"))
+    pe = os.path.join(tmp, "tanpa-ekstensi")
+    Path(pe).write_bytes(b"x")
+    check("unique: tanpa ekstensi -> (1)",
+          fu.unique_output_path(pe) == os.path.join(tmp, "tanpa-ekstensi (1)"))
+
+
 def test_gpu_detection():
     fake_all = (
         "Encoders:\n"
@@ -255,6 +274,7 @@ def main():
         test_gpu_detection()
         test_video_encoder_args()
         test_detect_gpu_encoder_live()
+        test_unique_output_path(tmp)
         test_integration_ffmpeg(tmp)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
