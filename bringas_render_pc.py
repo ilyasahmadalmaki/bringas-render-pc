@@ -138,7 +138,7 @@ class App(tk.Tk):
         row = ttk.Frame(vf); row.pack(fill="x", pady=2)
         ttk.Entry(row, textvariable=self.video_file, width=70).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse…", command=self._pick_video_file).pack(side="left", padx=4)
-        ttk.Radiobutton(vf, text="Folder (klip pendek acak, consumable — yang dipakai dipindah ke _used)",
+        ttk.Radiobutton(vf, text="Folder (semua klip dipakai — kurang diduplikat, lebih dipotong)",
                         variable=self.video_mode, value="folder",
                         command=self._refresh_preview).pack(anchor="w")
         row2 = ttk.Frame(vf); row2.pack(fill="x", pady=2)
@@ -358,13 +358,10 @@ class App(tk.Tk):
         folder = self.video_folder.get()
         if not folder or not os.path.isdir(folder):
             return
-        used = fu.used_folder_path(folder)
         clips = []
         defaulted = []
         for p in sorted(Path(folder).iterdir(), key=lambda x: x.name.lower()):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
-                continue
-            if os.path.abspath(str(p.parent)) == os.path.abspath(used):
                 continue
             dur = self._dur(str(p))
             if dur <= 0:
@@ -380,7 +377,7 @@ class App(tk.Tk):
                        if defaulted else "")
         self.video_info.config(
             text=f"Folder video: {len(clips)} klip, total stok {self.video_stock_total:.0f}s "
-                 f"({self.video_stock_total/60:.1f} mnt). Folder _used: {used}{default_txt}")
+                 f"({self.video_stock_total/60:.1f} mnt){default_txt}")
         self._log(f"Video folder: {len(clips)} klip, stok {self.video_stock_total:.0f}s"
                   + (f"; {len(defaulted)} file durasi tidak terbaca (dihitung 1 detik): "
                      + ", ".join(os.path.basename(s) for s in defaulted[:5])
@@ -403,13 +400,13 @@ class App(tk.Tk):
             return
         import random
         picked, total = fu.pick_videos_until_duration(self.video_clips, need)
+        dupes = len(picked) - len({p for p, _ in picked})
         names = "\n".join(f"  {i+1}. {os.path.basename(p)} ({d:.1f}s)"
                           for i, (p, d) in enumerate(picked[:15]))
         msg = (f"Butuh {need:.0f}s audio.\nDiambil {len(picked)} video "
-               f"(total {total:.0f}s, stok {self.video_stock_total:.0f}s).\n\n{names}"
+               f"(total {total:.0f}s, stok {self.video_stock_total:.0f}s"
+               + (f", {dupes} duplikat" if dupes else "") + f").\n\n{names}"
                + ("\n  …" if len(picked) > 15 else ""))
-        if self.video_stock_total < need:
-            msg += "\n\n⚠️ STOK KURANG — total stok lebih pendek dari audio!"
         messagebox.showinfo("Shuffle Preview", msg)
 
     def _refresh_preview(self):
@@ -435,9 +432,6 @@ class App(tk.Tk):
                 lines.append("Urutan: " + " → ".join(os.path.basename(f) for f in ordered[:6])
                              + (" → …" if len(ordered) > 6 else ""))
         lines.append(f"Estimasi output: {audio_dur:.0f}s" if audio_dur else "Estimasi output: -")
-        if (self.video_mode.get() == "folder" and audio_dur > 0
-                and self.video_stock_total and self.video_stock_total < audio_dur):
-            lines.append(f"⚠️ STOK VIDEO KURANG: stok {self.video_stock_total:.0f}s < audio {audio_dur:.0f}s")
         self.preview_label.config(text="\n".join(lines))
 
     # ------------------------------------------------------------- generate
@@ -457,20 +451,6 @@ class App(tk.Tk):
             if not messagebox.askyesno("Overwrite?",
                                        f"File sudah ada:\n{out_path}\nTimpa?"):
                 return
-        # Stock check BEFORE generating (video folder mode).
-        if self.video_mode.get() == "folder":
-            if not self.video_clips:
-                self._scan_video_folder()
-            need = self._audio_total_duration()
-            if need > 0 and self.video_stock_total < need:
-                if not messagebox.askyesno(
-                        "Stok video kurang",
-                        f"Total stok video {self.video_stock_total:.0f}s, "
-                        f"audio butuh {need:.0f}s.\n"
-                        "Lanjut dengan output LEBIH PENDEK (durasi = stok)?\n"
-                        "Pilih No untuk batal."):
-                    self._log("Render dibatalkan: stok video kurang.")
-                    return
         self.running = True
         self.btn_generate.config(state="disabled")
         self.progress.start(10)
@@ -488,7 +468,7 @@ class App(tk.Tk):
             fp = self.ffprobe_path.get() or fu.find_ffprobe()
 
             # ---- Audio ----
-            log("Langkah 1/4: siapkan audio…")
+            log("Langkah 1/3: siapkan audio…")
             if self.audio_mode.get() == "file":
                 src = self.audio_file.get()
                 if not src:
@@ -511,9 +491,7 @@ class App(tk.Tk):
             log(f"Audio siap: {audio_dur:.1f}s -> {audio_path}")
 
             # ---- Video ----
-            log("Langkah 2/4: gabung video…")
-            used_paths: list[str] = []
-            video_folder_src = ""
+            log("Langkah 2/3: gabung video…")
             if self.video_mode.get() == "file":
                 v = self.video_file.get()
                 if not v:
@@ -521,43 +499,27 @@ class App(tk.Tk):
                 ok = fu.build_video_loop(v, audio_path, audio_dur, out_path,
                                          log=log, ffmpeg=ff)
             else:
-                video_folder_src = self.video_folder.get()
                 if not self.video_clips:
                     self._scan_video_folder()
-                # If stock was insufficient and user confirmed shorter output,
-                # target = stock total, not audio duration.
-                target = min(audio_dur, self.video_stock_total) \
-                    if self.video_stock_total < audio_dur else audio_dur
-                import random as _r
+                # New logic: all clips, cycled until audio is covered,
+                # trimmed to audio duration. Nothing is moved or removed.
                 picked, total = fu.pick_videos_until_duration(
-                    self.video_clips, target)
-                used_paths = [p for p, _ in picked]
-                log(f"Video folder: ambil {len(picked)} klip, total {total:.1f}s "
-                    f"(target {target:.1f}s)")
-                ok = fu.build_video_folder(picked, audio_path, target,
+                    self.video_clips, audio_dur)
+                dupes = len(picked) - len({p for p, _ in picked})
+                log(f"Video folder: ambil {len(picked)} klip "
+                    f"({dupes} duplikat), total {total:.1f}s "
+                    f"(target {audio_dur:.1f}s)")
+                ok = fu.build_video_folder(picked, audio_path, audio_dur,
                                            out_path, workdir, log=log, ffmpeg=ff)
-                audio_dur = target  # expected output duration for verify
             if not ok:
                 raise RuntimeError("ffmpeg gagal membuat video output.")
 
             # ---- Verify ----
-            log("Langkah 3/4: verifikasi output…")
+            log("Langkah 3/3: verifikasi output…")
             good, msg = fu.verify_output(out_path, audio_dur, ffprobe=fp)
             log(f"Verifikasi: {msg}")
             if not good:
                 raise RuntimeError(f"Verifikasi output GAGAL: {msg}")
-
-            # ---- Move used videos (only after verified success) ----
-            if used_paths and video_folder_src:
-                log("Langkah 4/4: pindah video terpakai ke _used…")
-                used_folder, moved = fu.move_used_videos(
-                    used_paths, video_folder_src,
-                    os.path.basename(out_path), log=log)
-                log(f"Selesai pindah {len(moved)} file ke {used_folder}")
-                # Refresh stock display (used files are gone from source).
-                self.video_clips = [(p, d) for p, d in self.video_clips
-                                    if p not in used_paths]
-                self.video_stock_total = sum(d for _, d in self.video_clips)
 
             log(f"✅ SELESAI: {out_path}")
             self.after(0, lambda: messagebox.showinfo(
