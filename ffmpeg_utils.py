@@ -409,6 +409,24 @@ def sanitize_filename(name: str) -> str:
     return name[:120] or "output"
 
 
+def unique_output_path(path: str) -> str:
+    """Never overwrite: if `path` exists, append ' (1)', ' (2)', ...
+    before the extension (Windows-Explorer style). A name that already
+    ends with ' (N)' counts up from N."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    m = re.match(r"^(.*) \((\d+)\)$", base)
+    n = int(m.group(2)) if m else 0
+    if m:
+        base = m.group(1)
+    while True:
+        n += 1
+        cand = f"{base} ({n}){ext}"
+        if not os.path.exists(cand):
+            return cand
+
+
 def auto_output_name(video_name: str, audio_name: str,
                      when: Optional[datetime] = None) -> str:
     """video name + audio name + date, sanitized, without extension."""
