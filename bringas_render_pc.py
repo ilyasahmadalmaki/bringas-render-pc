@@ -207,8 +207,11 @@ class App(tk.Tk):
         row = ttk.Frame(pf); row.pack(fill="x", pady=2)
         tk.Label(row, text="Nama file:", bg=PANEL, fg=FG).pack(side="left")
         self.out_name = tk.StringVar(value="output")
-        ttk.Entry(row, textvariable=self.out_name, width=55).pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(row, text="Auto Nama", command=self._auto_name).pack(side="left")
+        self._name_custom = False
+        self.out_name_entry = ttk.Entry(row, textvariable=self.out_name, width=55)
+        self.out_name_entry.pack(side="left", fill="x", expand=True, padx=4)
+        self.out_name_entry.bind("<KeyRelease>", self._on_name_typed)
+        ttk.Button(row, text="Auto Nama", command=self._auto_name_force).pack(side="left")
         tk.Label(pf, text="Loudness: -14 LUFS / peak -1 dB (TERKUNCI di v1)  •  Audio final: AAC 320k, 48 kHz, stereo  •  Video 1-file: -c:v copy",
                  bg=PANEL, fg=MUTED).pack(anchor="w")
 
@@ -282,7 +285,19 @@ class App(tk.Tk):
         if p:
             self.out_folder.set(p)
 
+    def _on_name_typed(self, _event=None):
+        # User typed a name by hand -> stop auto-naming on file picks.
+        # Clearing the field re-enables auto-naming.
+        self._name_custom = bool(self.out_name.get().strip())
+
+    def _auto_name_force(self):
+        # "Auto Nama" button: regenerate the auto name explicitly.
+        self._name_custom = False
+        self._auto_name()
+
     def _auto_name(self):
+        if self._name_custom:
+            return
         v = self.video_file.get() or self.video_folder.get()
         a = self.audio_file.get() or self.audio_folder.get()
         if v and a:
@@ -476,11 +491,10 @@ class App(tk.Tk):
             return
         out_dir = self.out_folder.get()
         name = fu.sanitize_filename(self.out_name.get() or "output")
-        out_path = os.path.join(out_dir, name + ".mp4")
-        if os.path.exists(out_path):
-            if not messagebox.askyesno("Overwrite?",
-                                       f"File sudah ada:\n{out_path}\nTimpa?"):
-                return
+        # Never overwrite: same name gets ' (1)', ' (2)', ... automatically.
+        out_path = fu.unique_output_path(os.path.join(out_dir, name + ".mp4"))
+        if os.path.basename(out_path) != name + ".mp4":
+            self._log(f"Nama output sudah ada — pakai {os.path.basename(out_path)}")
         self.running = True
         self.btn_generate.config(state="disabled")
         self.progress.start(10)
@@ -490,6 +504,7 @@ class App(tk.Tk):
 
     def _generate_worker(self, out_path: str):
         log = self._log
+        workdir = None
         try:
             os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
             workdir = tempfile.mkdtemp(prefix="bringas_render_")
@@ -562,12 +577,14 @@ class App(tk.Tk):
             log(f"❌ GAGAL: {e}")
             self.after(0, lambda e=e: messagebox.showerror("Gagal", str(e)))
         finally:
-            try:
-                # Clean temp intermediates (workdir). Keep it simple: remove
-                # the temp dir created for this run.
-                pass
-            except Exception:
-                pass
+            # Temp auto-hapus, render berhasil maupun gagal. Output
+            # ditulis di luar workdir, jadi aman dihapus di sini.
+            if workdir:
+                try:
+                    shutil.rmtree(workdir, ignore_errors=True)
+                    log("Temp dibersihkan.")
+                except Exception:
+                    pass
             self.after(0, self._finish_run)
 
     def _finish_run(self):
