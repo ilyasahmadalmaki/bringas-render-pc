@@ -360,28 +360,31 @@ class App(tk.Tk):
             return
         used = fu.used_folder_path(folder)
         clips = []
-        skipped = []
+        defaulted = []
         for p in sorted(Path(folder).iterdir(), key=lambda x: x.name.lower()):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
                 continue
             if os.path.abspath(str(p.parent)) == os.path.abspath(used):
                 continue
             dur = self._dur(str(p))
-            if dur > 0:
-                clips.append((str(p), dur))
-            else:
-                skipped.append(str(p))
+            if dur <= 0:
+                # User's call: never skip a clip for unreadable duration.
+                # Count it as 1s so the picker takes it; the final render
+                # is cut with -t audio_duration, so overshoot is safe.
+                dur = 1.0
+                defaulted.append(str(p))
+            clips.append((str(p), dur))
         self.video_clips = clips
         self.video_stock_total = sum(d for _, d in clips)
-        skip_txt = (f" — {len(skipped)} file dilewati (durasi tidak terbaca)"
-                    if skipped else "")
+        default_txt = (f" — {len(defaulted)} file durasi tidak terbaca, dihitung 1 detik"
+                       if defaulted else "")
         self.video_info.config(
             text=f"Folder video: {len(clips)} klip, total stok {self.video_stock_total:.0f}s "
-                 f"({self.video_stock_total/60:.1f} mnt). Folder _used: {used}{skip_txt}")
+                 f"({self.video_stock_total/60:.1f} mnt). Folder _used: {used}{default_txt}")
         self._log(f"Video folder: {len(clips)} klip, stok {self.video_stock_total:.0f}s"
-                  + (f"; dilewati {len(skipped)}: "
-                     + ", ".join(os.path.basename(s) for s in skipped[:5])
-                     + (" …" if len(skipped) > 5 else "") if skipped else ""))
+                  + (f"; {len(defaulted)} file durasi tidak terbaca (dihitung 1 detik): "
+                     + ", ".join(os.path.basename(s) for s in defaulted[:5])
+                     + (" …" if len(defaulted) > 5 else "") if defaulted else ""))
         self._refresh_preview()
 
     def _audio_total_duration(self) -> float:
