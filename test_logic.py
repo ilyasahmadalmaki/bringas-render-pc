@@ -72,13 +72,16 @@ def test_pick_until_duration():
     picked, total = fu.pick_videos_until_duration(clips, 12.0, rng=rng)
     check("pick: total == target (trim terakhir)", abs(total - 12.0) < 1e-6,
           f"total={total} picked={picked}")
-    check("pick: tidak ada duplikat dalam 1 output",
+    check("pick: 1 putaran, tidak ada duplikat",
           len({p for p, _ in picked}) == len(picked), str(picked))
     check("pick: semua dari stok", all(p in [c[0] for c in clips] for p, _ in picked))
-    # Insufficient stock
+    # Stock shorter than target -> duplicate (cycle) until covered
     picked2, total2 = fu.pick_videos_until_duration(clips, 999.0, rng=random.Random(3))
-    check("pick: stok kurang -> kembalikan semua, total < target",
-          len(picked2) == 4 and total2 == 20.0, f"{picked2} {total2}")
+    check("pick: stok kurang -> diduplikat sampai target",
+          abs(total2 - 999.0) < 1e-6 and len(picked2) > len(clips),
+          f"{picked2} {total2}")
+    check("pick: duplikat tetap dari stok",
+          all(p in [c[0] for c in clips] for p, _ in picked2))
 
 
 def test_used_folder_path():
