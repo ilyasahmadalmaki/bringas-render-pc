@@ -108,14 +108,62 @@ class MediaInfo:
     channels: int = 0
 
 
+def _to_float(v) -> float:
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fps(fr) -> float:
+    try:
+        num, den = str(fr).split("/")
+        return float(num) / float(den) if float(den) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _duration_from_probe(data: dict) -> float:
+    """Best-effort duration from one ffprobe JSON dump.
+
+    Fallback chain (some AI-generated MP4s carry no duration in the
+    container header, so -show_format alone reports 0 and the file
+    used to be silently dropped from the video folder):
+    1. format duration
+    2. any stream duration (video first, then the rest)
+    3. video frames / fps
+    """
+    dur = _to_float((data.get("format") or {}).get("duration"))
+    if dur > 0:
+        return dur
+    streams = data.get("streams") or []
+    for s in streams:
+        if s.get("codec_type") == "video":
+            d = _to_float(s.get("duration"))
+            if d > 0:
+                return d
+    for s in streams:
+        d = _to_float(s.get("duration"))
+        if d > 0:
+            return d
+    for s in streams:
+        if s.get("codec_type") == "video":
+            frames = _to_float(s.get("nb_frames"))
+            fps = _fps(s.get("avg_frame_rate") or s.get("r_frame_rate"))
+            if frames > 0 and fps > 0:
+                return frames / fps
+    return 0.0
+
+
 def probe_duration(path: str, ffprobe: Optional[str] = None) -> float:
     """Duration in seconds via ffprobe, 0.0 on failure."""
     fp = find_ffprobe(ffprobe)
-    cmd = [fp, "-v", "quiet", "-print_format", "json", "-show_format", path]
+    cmd = [fp, "-v", "quiet", "-print_format", "json",
+           "-show_format", "-show_streams", path]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         data = json.loads(r.stdout or "{}")
-        return float(data.get("format", {}).get("duration", 0.0) or 0.0)
+        return _duration_from_probe(data)
     except Exception:
         return 0.0
 
@@ -129,7 +177,7 @@ def probe_specs(path: str, ffprobe: Optional[str] = None) -> MediaInfo:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         data = json.loads(r.stdout or "{}")
-        info.duration = float(data.get("format", {}).get("duration", 0.0) or 0.0)
+        info.duration = _duration_from_probe(data)
         for s in data.get("streams", []):
             if s.get("codec_type") == "video" and not info.codec:
                 info.codec = s.get("codec_name", "")
