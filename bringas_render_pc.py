@@ -96,8 +96,32 @@ class App(tk.Tk):
 
     def _build_ui(self):
         self._style()
-        root = ttk.Frame(self, padding=10)
-        root.pack(fill="both", expand=True)
+        # Scrollable main area: the window is taller than short screens
+        # (1366x768), so without scrolling the RENDER button at the
+        # bottom is unreachable. Everything below builds into `root`.
+        canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        root = ttk.Frame(canvas, padding=10)
+        canvas.create_window((0, 0), window=root, anchor="nw", tags="main_window")
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig("main_window", width=event.width)
+
+        def _on_mousewheel(event):
+            # The log textbox scrolls itself; everywhere else scrolls the window.
+            if getattr(event, "widget", None) is getattr(self, "log_text", None):
+                return
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        root.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         title = tk.Label(root, text="🎬 Bringas Render PC",
                          font=("Segoe UI", 16, "bold"), bg=BG, fg=FG)
@@ -189,7 +213,7 @@ class App(tk.Tk):
 
         # ---- Run ----
         run = ttk.Frame(root); run.pack(fill="x", pady=6)
-        self.btn_generate = ttk.Button(run, text="▶  GENERATE", style="Accent.TButton",
+        self.btn_generate = ttk.Button(run, text="▶  RENDER", style="Accent.TButton",
                                        command=self._on_generate)
         self.btn_generate.pack(side="left", padx=2)
         self.btn_cancel = ttk.Button(run, text="Batalkan", command=self._on_cancel)
@@ -200,7 +224,7 @@ class App(tk.Tk):
         self.log_text = tk.Text(root, height=10, bg="#0e1117", fg="#c9d1d9",
                                 font=("Consolas", 9))
         self.log_text.pack(fill="both", expand=True, pady=4)
-        self._log("Bringas Render PC siap. Pilih video + audio, lalu Generate.")
+        self._log("Bringas Render PC siap. Pilih video + audio, lalu Render.")
 
     # ------------------------------------------------------------- logging
     def _log(self, msg: str):
@@ -336,6 +360,7 @@ class App(tk.Tk):
             return
         used = fu.used_folder_path(folder)
         clips = []
+        skipped = []
         for p in sorted(Path(folder).iterdir(), key=lambda x: x.name.lower()):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
                 continue
@@ -344,12 +369,19 @@ class App(tk.Tk):
             dur = self._dur(str(p))
             if dur > 0:
                 clips.append((str(p), dur))
+            else:
+                skipped.append(str(p))
         self.video_clips = clips
         self.video_stock_total = sum(d for _, d in clips)
+        skip_txt = (f" — {len(skipped)} file dilewati (durasi tidak terbaca)"
+                    if skipped else "")
         self.video_info.config(
             text=f"Folder video: {len(clips)} klip, total stok {self.video_stock_total:.0f}s "
-                 f"({self.video_stock_total/60:.1f} mnt). Folder _used: {used}")
-        self._log(f"Video folder: {len(clips)} klip, stok {self.video_stock_total:.0f}s")
+                 f"({self.video_stock_total/60:.1f} mnt). Folder _used: {used}{skip_txt}")
+        self._log(f"Video folder: {len(clips)} klip, stok {self.video_stock_total:.0f}s"
+                  + (f"; dilewati {len(skipped)}: "
+                     + ", ".join(os.path.basename(s) for s in skipped[:5])
+                     + (" …" if len(skipped) > 5 else "") if skipped else ""))
         self._refresh_preview()
 
     def _audio_total_duration(self) -> float:
@@ -410,7 +442,7 @@ class App(tk.Tk):
         self._log("Batalkan ditekan — pekerjaan yang sedang jalan akan diselesaikan "
                   "di langkah aman berikutnya (v1: tidak mematikan ffmpeg paksa).")
         messagebox.showinfo("Batalkan", "v1: tunggu proses saat ini selesai, "
-                            "atau tutup aplikasi. Generate berikutnya tidak akan dimulai.")
+                            "atau tutup aplikasi. Render berikutnya tidak akan dimulai.")
 
     def _on_generate(self):
         if self.running:
@@ -434,7 +466,7 @@ class App(tk.Tk):
                         f"audio butuh {need:.0f}s.\n"
                         "Lanjut dengan output LEBIH PENDEK (durasi = stok)?\n"
                         "Pilih No untuk batal."):
-                    self._log("Generate dibatalkan: stok video kurang.")
+                    self._log("Render dibatalkan: stok video kurang.")
                     return
         self.running = True
         self.btn_generate.config(state="disabled")
