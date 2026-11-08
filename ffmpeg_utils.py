@@ -4,9 +4,10 @@ Core logic (no GUI) for Bringas Render PC.
 
 Locked spec (2026-11-08, user discussion):
 - Video 1 File: seamless loop, -stream_loop -1, -c:v copy, duration = audio.
-- Video Folder: random consumable short clips (2-10s), pick until >= audio
-  duration, trim last to audio duration, move used clips to "<src>_used"
-  only after verified output (never delete permanently).
+- Video Folder: use ALL short clips (2-10s) in random order; if the total
+  is shorter than the audio, repeat the set (reshuffled each pass) until
+  it covers the audio; if longer, trim to audio duration. Nothing is
+  consumed, moved, or deleted — the source folder stays intact.
 - Audio 1 File: WAV/FLAC -> AAC 320k 48kHz stereo (loudnorm -14 LUFS);
   MP3 -> -c:a copy by default.
 - Audio Folder: combine ALL files, alphabetical default, pins first in
@@ -259,33 +260,36 @@ def pick_videos_until_duration(
     rng: Optional[random.Random] = None,
 ) -> Tuple[List[Tuple[str, float]], float]:
     """
-    Shuffle the full clip list (true random, no bias by name/date, no
-    repeat within one output), then pick sequentially, summing durations,
-    until total >= target_duration.
+    Use ALL clips in the folder (shuffled, no bias by name/date), then
+    repeat the set (reshuffled each pass) until total >= target_duration.
+    The last clip's duration_used is trimmed so the sum equals
+    target_duration exactly (when the raw sum overshoots).
 
     Returns (picked, total_picked_duration) where each picked entry is
-    (path, duration_used). The last clip's duration_used is trimmed so
-    the sum equals target_duration exactly (when the raw sum overshoots).
-    If the stock is insufficient, returns everything picked and the
-    raw total (< target).
+    (path, duration_used). A clip may appear several times when the
+    stock is shorter than the target (duplication); within one pass no
+    clip repeats. Nothing is consumed or removed — the source folder
+    stays intact.
     """
-    shuffled = list(clips)
+    usable = [(p, d) for p, d in clips if d > 0]
+    if not usable or target_duration <= 0:
+        return [], 0.0
     r = rng or random
-    r.shuffle(shuffled)
     picked: List[Tuple[str, float]] = []
     total = 0.0
-    for path, dur in shuffled:
-        if total >= target_duration:
-            break
-        if dur <= 0:
-            continue
-        if total + dur > target_duration:
-            used = target_duration - total
-            picked.append((path, used))
-            total = target_duration
-            break
-        picked.append((path, dur))
-        total += dur
+    while total < target_duration:
+        shuffled = list(usable)
+        r.shuffle(shuffled)
+        for path, dur in shuffled:
+            if total >= target_duration:
+                break
+            if total + dur > target_duration:
+                used = target_duration - total
+                picked.append((path, used))
+                total = target_duration
+                break
+            picked.append((path, dur))
+            total += dur
     return picked, total
 
 
