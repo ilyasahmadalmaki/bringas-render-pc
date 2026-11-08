@@ -85,10 +85,23 @@ def find_ffprobe(explicit: Optional[str] = None) -> str:
     return "ffprobe"
 
 
+def _no_window_kwargs() -> dict:
+    """Windows: hide the console window for ffmpeg/ffprobe children.
+
+    The app is built --windowed (no console of its own), but ffmpeg.exe
+    and ffprobe.exe are console programs: without CREATE_NO_WINDOW every
+    spawn pops up a visible black cmd window (during render, for the
+    whole render; during probing, a flash per file).
+    """
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def _run(cmd: List[str], log: LogFn = _noop_log) -> subprocess.CompletedProcess:
     log("$ " + " ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace")
+                          errors="replace", **_no_window_kwargs())
 
 
 # --------------------------------------------------------------------------
@@ -161,7 +174,8 @@ def probe_duration(path: str, ffprobe: Optional[str] = None) -> float:
     cmd = [fp, "-v", "quiet", "-print_format", "json",
            "-show_format", "-show_streams", path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                           **_no_window_kwargs())
         data = json.loads(r.stdout or "{}")
         return _duration_from_probe(data)
     except Exception:
@@ -175,7 +189,8 @@ def probe_specs(path: str, ffprobe: Optional[str] = None) -> MediaInfo:
     cmd = [fp, "-v", "quiet", "-print_format", "json",
            "-show_format", "-show_streams", path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                           **_no_window_kwargs())
         data = json.loads(r.stdout or "{}")
         info.duration = _duration_from_probe(data)
         for s in data.get("streams", []):
@@ -584,7 +599,9 @@ def verify_output(output_path: str, expected_duration: float,
         return False, "file output 0 byte"
     dur = probe_duration(output_path, ffprobe=ffprobe)
     if dur <= 0:
-        return False, "ffprobe tidak bisa baca durasi output"
+        size_mb = os.path.getsize(output_path) / 1_000_000
+        return False, (f"ffprobe tidak bisa baca durasi output "
+                       f"(file ada, {size_mb:.1f} MB — coba putar manual dulu)")
     if abs(dur - expected_duration) > tolerance:
         return False, (f"durasi output {dur:.1f}s != "
                        f"ekspektasi {expected_duration:.1f}s (toleransi {tolerance}s)")
