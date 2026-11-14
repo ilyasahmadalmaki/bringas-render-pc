@@ -106,10 +106,15 @@ python3 test_logic.py
 
 Di Linux (VM dev) ffmpeg/ffprobe tersedia, jadi test integrasi (membuat klip + nada kecil, build audio folder, build video loop & folder, verify, GPU detect) ikut jalan. Di Windows, pastikan `ffmpeg.exe` / `ffprobe.exe` ketemu dulu sebelum Render.
 
+## ⚡ Mode Cepat & Batalkan (v1.1)
+
+- **Mode Cepat** (checkbox di seksi Audio, default MATI): normalize pakai single-pass loudnorm — file cuma dibaca 1x, kira-kira 2x lebih cepat dari dual-pass. Harganya: loudness bisa meleset ~1-3 LUFS dari target -14 dan true peak kurang ketat. Default tetap dual-pass (kualitas terbaik).
+- **Folder audio diproses paralel** (sampai 4 file sekaligus, ngikutin CPU) dan **hasil normalize di-cache** — file yang sudah pernah di-normalize tidak di-encode ulang di render berikutnya. Urutan output tetap sesuai urutan list.
+- Tombol **Batalkan** sekarang benar-benar berhenti: ffmpeg yang sedang jalan dimatikan, output setengah jadi dihapus, temp dibersihkan, tombol RENDER aktif lagi. Menutup jendela saat render jalan juga mematikan ffmpeg (tidak ada proses yatim).
+
 ## 📝 Catatan v1
 
 - Loudness target -14 LUFS / -1 dB **terkunci** (tidak bisa diubah di v1).
-- Tombol **Batalkan** di v1 hanya mencegah render berikutnya; proses ffmpeg yang sedang jalan tidak dimatikan paksa.
 - Video 1-file diasumsikan seamless loop — tool tidak mengubahnya.
 - ffmpeg **tidak** dibundel ke dalam .exe (ukurannya ~80 MB sendiri) — `setup-1-klik.bat` download otomatis, atau taruh `ffmpeg.exe` + `ffprobe.exe` di folder yang sama dengan `.exe`, atau di PATH.
 

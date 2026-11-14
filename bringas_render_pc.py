@@ -59,6 +59,11 @@ class App(tk.Tk):
         self.audio_folder = tk.StringVar()
         self.random_var = tk.BooleanVar(value=False)
         self.normalize_single = tk.BooleanVar(value=True)
+        # Mode Cepat: single-pass loudnorm (~2x lebih cepat, loudness
+        # kurang presisi). Default OFF — kualitas terbaik tetap default.
+        self.fast_mode_var = tk.BooleanVar(value=False)
+        # Handle proses render yang sedang jalan (untuk Batalkan).
+        self.render_control: fu.RenderControl | None = None
         # Audio folder list state (in-memory only; delete = session-only)
         self.audio_files: list[str] = []
         self.pin_order: list[str] = []
@@ -74,6 +79,15 @@ class App(tk.Tk):
 
         self._build_ui()
         self.after(100, self._drain_log)
+        # Tutup jendela saat render jalan: matikan ffmpeg dulu, jangan
+        # tinggalkan proses yatim di background.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        if self.running and self.render_control is not None:
+            self._log("Aplikasi ditutup saat render jalan — menghentikan ffmpeg…")
+            self.render_control.request_cancel()
+        self.destroy()
 
     # ------------------------------------------------------------------ UI
     def _style(self):
@@ -197,6 +211,8 @@ class App(tk.Tk):
         ttk.Button(row, text="Browse…", command=self._pick_audio_file).pack(side="left", padx=4)
         ttk.Checkbutton(af, text="Normalize file tunggal ke -14 LUFS (WAV/FLAC saja; MP3 tetap copy)",
                         variable=self.normalize_single).pack(anchor="w")
+        ttk.Checkbutton(af, text="Mode Cepat: normalize 1 pass (kira-kira 2x lebih cepat, loudness kurang presisi)",
+                        variable=self.fast_mode_var).pack(anchor="w")
         ttk.Radiobutton(af, text="Folder (gabung semua file sampai habis)",
                         variable=self.audio_mode, value="folder",
                         command=self._refresh_preview).pack(anchor="w")
@@ -513,10 +529,13 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------- generate
     def _on_cancel(self):
-        self._log("Batalkan ditekan — pekerjaan yang sedang jalan akan diselesaikan "
-                  "di langkah aman berikutnya (v1: tidak mematikan ffmpeg paksa).")
-        messagebox.showinfo("Batalkan", "v1: tunggu proses saat ini selesai, "
-                            "atau tutup aplikasi. Render berikutnya tidak akan dimulai.")
+        """Batalkan WAJIB benar-benar berhenti: matikan ffmpeg yang
+        sedang jalan, worker berhenti, output setengah jadi dihapus."""
+        if not self.running or self.render_control is None:
+            return
+        self._log("Batalkan ditekan — menghentikan ffmpeg…")
+        self.btn_cancel.config(state="disabled", text="Membatalkan…")
+        self.render_control.request_cancel()
 
     def _on_generate(self):
         if self.running:
@@ -528,7 +547,9 @@ class App(tk.Tk):
         if os.path.basename(out_path) != name + ".mp4":
             self._log(f"Nama output sudah ada — pakai {os.path.basename(out_path)}")
         self.running = True
+        self.render_control = fu.RenderControl()
         self.btn_generate.config(state="disabled")
+        self.btn_cancel.config(state="normal", text="Batalkan")
         self.progress.start(10)
         t = threading.Thread(target=self._generate_worker,
                              args=(out_path,), daemon=True)
@@ -537,10 +558,15 @@ class App(tk.Tk):
     def _generate_worker(self, out_path: str):
         log = self._log
         workdir = None
+        ctrl = self.render_control
+        fast = self.fast_mode_var.get()
+        cache_dir = fu.default_cache_dir()
         try:
             os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
             workdir = tempfile.mkdtemp(prefix="bringas_render_")
             log(f"Workdir: {workdir}")
+            if fast:
+                log("Mode Cepat aktif: normalize 1 pass (tanpa ukur dual-pass).")
             ff = self.ffmpeg_path.get() or fu.find_ffmpeg()
             fp = self.ffprobe_path.get() or fu.find_ffprobe()
             # GPU encoder for the video re-encode (cached detection).
@@ -555,13 +581,15 @@ class App(tk.Tk):
                     raise ValueError("Pilih file audio dulu.")
                 audio_path, audio_dur = fu.build_audio_single(
                     src, workdir, log=log, ffmpeg=ff,
-                    normalize=self.normalize_single.get())
+                    normalize=self.normalize_single.get(),
+                    fast=fast, control=ctrl, cache_dir=cache_dir)
             else:
                 ordered = self._ordered_audio()
                 if not ordered:
                     raise ValueError("Folder audio kosong / belum di-scan.")
                 audio_path, audio_dur, lufs = fu.build_audio_folder(
                     ordered, workdir, log=log, ffmpeg=ff,
+                    fast=fast, control=ctrl, cache_dir=cache_dir,
                     progress=lambda i, n, name: log(f"  normalize {i}/{n}: {name}"))
                 for f, v in lufs:
                     if v is not None:
@@ -577,7 +605,7 @@ class App(tk.Tk):
                 if not v:
                     raise ValueError("Pilih file video dulu.")
                 ok = fu.build_video_loop(v, audio_path, audio_dur, out_path,
-                                         log=log, ffmpeg=ff)
+                                         log=log, ffmpeg=ff, control=ctrl)
             else:
                 if not self.video_clips:
                     self._scan_video_folder()
@@ -595,7 +623,7 @@ class App(tk.Tk):
                     log("GPU tidak dipakai — re-encode pakai CPU (libx264)")
                 ok = fu.build_video_folder(picked, audio_path, audio_dur,
                                            out_path, workdir, log=log, ffmpeg=ff,
-                                           encoder=encoder)
+                                           encoder=encoder, control=ctrl)
             if not ok:
                 raise RuntimeError("ffmpeg gagal membuat video output.")
 
@@ -605,6 +633,15 @@ class App(tk.Tk):
             log(f"✅ SELESAI: {out_path}")
             self.after(0, lambda: messagebox.showinfo(
                 "Selesai", f"Output berhasil:\n{out_path}"))
+        except fu.RenderCancelled:
+            log("⛔ Render dibatalkan — ffmpeg dimatikan, output setengah jadi dihapus.")
+            try:
+                if os.path.isfile(out_path):
+                    os.remove(out_path)
+            except Exception:
+                pass
+            self.after(0, lambda: messagebox.showinfo(
+                "Dibatalkan", "Render dibatalkan."))
         except Exception as e:
             log(f"❌ GAGAL: {e}")
             self.after(0, lambda e=e: messagebox.showerror("Gagal", str(e)))
@@ -621,7 +658,9 @@ class App(tk.Tk):
 
     def _finish_run(self):
         self.running = False
+        self.render_control = None
         self.btn_generate.config(state="normal")
+        self.btn_cancel.config(state="normal", text="Batalkan")
         self.progress.stop()
         self._refresh_audio_list()
         self._refresh_preview()

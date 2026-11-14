@@ -10,6 +10,8 @@ import random
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -262,6 +264,145 @@ def test_detect_gpu_encoder_live():
           enc1 is None)
 
 
+def _make_tone(path, dur, freq=440):
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi",
+         "-i", f"sine=frequency={freq}:duration={dur}",
+         "-ar", "48000", "-ac", "2", path],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-500:]
+
+
+def test_fast_encode(tmp):
+    if not shutil_which("ffmpeg"):
+        print("SKIP  fast encode: ffmpeg tidak tersedia")
+        return
+    src = os.path.join(tmp, "fast.wav")
+    _make_tone(src, 2)
+    dst = os.path.join(tmp, "fast.m4a")
+    ok, in_lufs, _ = fu.loudnorm_encode_file(src, dst, fast=True)
+    check("fast: single-pass encode ok", ok and os.path.isfile(dst)
+          and os.path.getsize(dst) > 0)
+    if ok:
+        d = fu.probe_duration(dst)
+        check("fast: output durasi ~2s", abs(d - 2.0) < 0.6, f"d={d}")
+
+
+def test_norm_cache(tmp):
+    if not shutil_which("ffmpeg"):
+        print("SKIP  norm cache: ffmpeg tidak tersedia")
+        return
+    src = os.path.join(tmp, "cache.wav")
+    _make_tone(src, 2)
+    cache = os.path.join(tmp, "cache_dir")
+    dst1 = os.path.join(tmp, "c1.m4a")
+    dst2 = os.path.join(tmp, "c2.m4a")
+    ok1, _, _ = fu.loudnorm_encode_file(src, dst1, fast=True, cache_dir=cache)
+    files_after_1 = os.listdir(cache) if os.path.isdir(cache) else []
+    ok2, _, _ = fu.loudnorm_encode_file(src, dst2, fast=True, cache_dir=cache)
+    check("cache: encode pertama ok + 1 file cache",
+          ok1 and len(files_after_1) == 1, str(files_after_1))
+    check("cache: encode kedua ok (cache hit)",
+          ok2 and os.path.isfile(dst2) and os.path.getsize(dst2) > 0)
+    check("cache: hasil kedua == hasil pertama (byte-identik)",
+          ok1 and ok2 and Path(dst1).read_bytes() == Path(dst2).read_bytes())
+    # Mode beda -> key beda -> file cache baru
+    dst3 = os.path.join(tmp, "c3.m4a")
+    fu.loudnorm_encode_file(src, dst3, fast=False, cache_dir=cache)
+    check("cache: mode best vs fast punya key sendiri",
+          len(os.listdir(cache)) == 2, str(os.listdir(cache)))
+
+
+def test_cancel_run():
+    if not shutil_which("ffmpeg"):
+        print("SKIP  cancel run: ffmpeg tidak tersedia")
+        return
+    ctrl = fu.RenderControl()
+    # -re forces realtime: 120s of audio, cancel after 0.5s must land mid-run.
+    cmd = ["ffmpeg", "-hide_banner", "-re", "-f", "lavfi",
+           "-i", "sine=frequency=440:duration=120", "-f", "null", "-"]
+    result: dict = {}
+
+    def _go():
+        t0 = time.monotonic()
+        try:
+            fu._run(cmd, control=ctrl)
+            result["raised"] = False
+        except fu.RenderCancelled:
+            result["raised"] = True
+        result["elapsed"] = time.monotonic() - t0
+
+    th = threading.Thread(target=_go, daemon=True)
+    th.start()
+    time.sleep(0.5)
+    ctrl.request_cancel()
+    th.join(timeout=20)
+    check("cancel: _run raise RenderCancelled", result.get("raised") is True,
+          str(result))
+    check("cancel: berhenti cepat (<20s, bukan 120s)",
+          result.get("elapsed", 999) < 20, str(result))
+    check("cancel: thread benar-benar selesai", not th.is_alive())
+
+
+def test_parallel_folder_fast(tmp):
+    if not shutil_which("ffmpeg"):
+        print("SKIP  parallel folder: ffmpeg tidak tersedia")
+        return
+    tones = []
+    for i, freq in enumerate((440, 550, 660, 770), 1):
+        p = os.path.join(tmp, f"p{i}.wav")
+        _make_tone(p, 2, freq)
+        tones.append(p)
+    work = os.path.join(tmp, "work_par")
+    os.makedirs(work, exist_ok=True)
+    out, total, lufs = fu.build_audio_folder(
+        tones, work, log=lambda m: None, fast=True, workers=2)
+    check("paralel: build_audio_folder ok",
+          out is not None and os.path.isfile(out), str(out))
+    check("paralel: total ~8s", abs(total - 8.0) < 0.8, f"total={total}")
+    check("paralel: urutan output tetap urutan input",
+          [f for f, _ in lufs] == tones, str(lufs))
+    if out:
+        d = fu.probe_duration(out)
+        check("paralel: audio gabungan durasi ~8s", abs(d - 8.0) < 0.8, f"d={d}")
+
+
+def test_cancel_folder(tmp):
+    if not shutil_which("ffmpeg"):
+        print("SKIP  cancel folder: ffmpeg tidak tersedia")
+        return
+    tones = []
+    for i, freq in enumerate((440, 550, 660), 1):
+        p = os.path.join(tmp, f"cf{i}.wav")
+        _make_tone(p, 60, freq)
+        tones.append(p)
+    work = os.path.join(tmp, "work_cancel")
+    os.makedirs(work, exist_ok=True)
+    ctrl = fu.RenderControl()
+    result: dict = {}
+
+    def _go():
+        t0 = time.monotonic()
+        try:
+            fu.build_audio_folder(tones, work, log=lambda m: None,
+                                  fast=True, control=ctrl)
+            result["raised"] = False
+        except fu.RenderCancelled:
+            result["raised"] = True
+        result["elapsed"] = time.monotonic() - t0
+
+    th = threading.Thread(target=_go, daemon=True)
+    th.start()
+    time.sleep(1.0)
+    ctrl.request_cancel()
+    th.join(timeout=25)
+    check("cancel folder: raise RenderCancelled", result.get("raised") is True,
+          str(result))
+    check("cancel folder: berhenti cepat (<25s, bukan puluhan detik)",
+          result.get("elapsed", 999) < 25, str(result))
+    check("cancel folder: thread benar-benar selesai", not th.is_alive())
+
+
 def main():
     print("== Bringas Render PC — self test ==")
     with tempfile.TemporaryDirectory(prefix="bringas_test_") as tmp:
@@ -276,6 +417,11 @@ def main():
         test_detect_gpu_encoder_live()
         test_unique_output_path(tmp)
         test_integration_ffmpeg(tmp)
+        test_fast_encode(tmp)
+        test_norm_cache(tmp)
+        test_cancel_run()
+        test_parallel_folder_fast(tmp)
+        test_cancel_folder(tmp)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

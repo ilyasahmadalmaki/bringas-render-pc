@@ -19,6 +19,8 @@ Locked spec (2026-11-08, user discussion):
 """
 from __future__ import annotations
 
+import concurrent.futures
+import hashlib
 import json
 import math
 import os
@@ -27,6 +29,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +49,82 @@ LogFn = Callable[[str], None]
 
 def _noop_log(msg: str) -> None:
     pass
+
+
+# --------------------------------------------------------------------------
+# Cancellation — Batalkan wajib benar-benar berhenti (bukan cuma popup)
+# --------------------------------------------------------------------------
+
+class RenderCancelled(Exception):
+    """Raised when the user cancels a render (Batalkan)."""
+
+
+class RenderControl:
+    """Shared handle between the GUI thread and the render worker.
+
+    - The worker registers every ffmpeg process it spawns.
+    - The GUI calls request_cancel(): the flag is set AND every
+      registered ffmpeg process is terminated (terminate, then kill
+      if it refuses to die within 3s). The worker's _run loop polls
+      the flag and raises RenderCancelled, so the render stops at
+      the next check — mid-measure, mid-encode, or mid-mux.
+    - terminate_running() kills the processes WITHOUT setting the
+      flag: used internally when a step fails, so a failure is
+      still reported as a failure, not as a cancel.
+    """
+
+    def __init__(self):
+        self._cancelled = threading.Event()
+        self._procs: set = set()
+        self._lock = threading.Lock()
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def check(self) -> None:
+        if self._cancelled.is_set():
+            raise RenderCancelled("Render dibatalkan.")
+
+    def request_cancel(self) -> None:
+        self._cancelled.set()
+        self.terminate_running()
+
+    def register(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._procs.add(proc)
+
+    def unregister(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._procs.discard(proc)
+
+    def terminate_running(self) -> None:
+        with self._lock:
+            procs = list(self._procs)
+        for proc in procs:
+            _terminate_proc(proc)
+
+
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    """Terminate a process, escalate to kill if it ignores SIGTERM
+    (Windows: terminate() already kills). Never raises."""
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -99,10 +179,46 @@ def _no_window_kwargs() -> dict:
     return {}
 
 
-def _run(cmd: List[str], log: LogFn = _noop_log) -> subprocess.CompletedProcess:
+def _run(cmd: List[str], log: LogFn = _noop_log,
+         control: Optional[RenderControl] = None) -> subprocess.CompletedProcess:
+    """Run a command, capturing output (same result shape as before).
+
+    Uses Popen instead of subprocess.run so a cancel can actually
+    kill the process: the loop polls the control flag every 0.2s
+    while the process runs, and raises RenderCancelled (after
+    terminating the process) as soon as cancel is requested.
+    Without a control this behaves exactly like the old _run.
+    """
     log("$ " + " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", **_no_window_kwargs())
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace",
+                            **_no_window_kwargs())
+    if control is not None:
+        control.register(proc)
+    try:
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                if control is not None and control.is_cancelled():
+                    control.terminate_running()
+                    try:
+                        out, err = proc.communicate(timeout=5)
+                    except Exception:
+                        out, err = "", ""
+                    raise RenderCancelled("Render dibatalkan.")
+                continue
+        # Race: cancel may have landed (and killed the process) just
+        # as communicate() returned normally — the render is still
+        # cancelled, so report it as cancelled, not as success.
+        if control is not None and control.is_cancelled():
+            raise RenderCancelled("Render dibatalkan.")
+    finally:
+        if control is not None:
+            control.unregister(proc)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 # --------------------------------------------------------------------------
@@ -460,15 +576,38 @@ class LoudnormMeasured:
 _LOUDNORM_JSON_RE = re.compile(r"\{[^}]*\"input_i\"[^}]*\}", re.DOTALL)
 
 
+def default_cache_dir() -> str:
+    """Persistent cache for normalized audio (survives app restarts).
+    Lives in the OS temp dir; files are keyed by content identity,
+    so a stale entry can never be mistaken for a fresh one."""
+    d = os.path.join(tempfile.gettempdir(), "bringas_render_cache")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _norm_cache_key(path: str, fast: bool) -> str:
+    """Identity of a normalize job: file content (path+size+mtime)
+    + mode (fast/best) + loudness targets. Changing any of these
+    yields a different key, so the cache can never serve a wrong
+    result for a changed file or a changed setting."""
+    st = os.stat(path)
+    raw = (f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}|"
+           f"fast={fast}|I={LOUDNESS_TARGET_I}|TP={LOUDNESS_TARGET_TP}|"
+           f"LRA={LOUDNESS_TARGET_LRA}|br={AUDIO_BITRATE}|rate={AUDIO_RATE}")
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
 def loudnorm_measure(path: str, log: LogFn = _noop_log,
-                     ffmpeg: Optional[str] = None) -> Optional[LoudnormMeasured]:
+                     ffmpeg: Optional[str] = None,
+                     control: Optional[RenderControl] = None,
+                     ) -> Optional[LoudnormMeasured]:
     """Pass 1: measure loudness with loudnorm, return measured values."""
     ff = find_ffmpeg(ffmpeg)
     filt = (f"loudnorm=I={LOUDNESS_TARGET_I}:TP={LOUDNESS_TARGET_TP}:"
             f"LRA={LOUDNESS_TARGET_LRA}:print_format=json")
     cmd = [ff, "-hide_banner", "-i", path, "-vn", "-af", filt,
            "-f", "null", "-"]
-    r = _run(cmd, log)
+    r = _run(cmd, log, control=control)
     m = _LOUDNORM_JSON_RE.search(r.stderr or "")
     if not m:
         log(f"  loudnorm measure: no JSON for {os.path.basename(path)}")
@@ -490,24 +629,67 @@ def loudnorm_encode_file(
     src: str, dst: str, log: LogFn = _noop_log,
     ffmpeg: Optional[str] = None,
     measured: Optional[LoudnormMeasured] = None,
+    fast: bool = False,
+    control: Optional[RenderControl] = None,
+    cache_dir: Optional[str] = None,
 ) -> Tuple[bool, Optional[float], Optional[float]]:
     """
-    Pass 2 (or single-pass fallback): encode src -> dst AAC 320k 48kHz
-    stereo, normalized to -14 LUFS / -1 dBTP, linear=true, soxr resample.
-    Returns (ok, input_lufs, output_lufs). Output LUFS is re-measured
-    only if the caller asks via a second measure call; here we return
-    the measured input LUFS and None for output (cheap path).
-    If soxr is unavailable in this ffmpeg build, falls back to the
-    default resampler.
+    Encode src -> dst AAC 320k 48kHz stereo, normalized to
+    -14 LUFS / -1 dBTP, linear=true.
+
+    Best mode (fast=False, default — unchanged from v1): dual-pass.
+    Pass 1 measures loudness, pass 2 encodes with the measured
+    values, soxr resample. Slowest, most accurate.
+
+    Fast mode (fast=True): single-pass loudnorm, no measure pass
+    and the default resampler (no soxr attempt). Roughly 2x faster
+    because the file is only decoded once; the price is loudness
+    accuracy (can miss the -14 LUFS target by ~1-3 LUFS and the
+    true-peak limit is less strict). YouTube re-normalizes on
+    playback anyway, so the audible difference is small.
+
+    cache_dir: if given, a successful encode is stored under a
+    content+settings key and reused on later renders, so a file
+    that was already normalized is never re-encoded.
+
+    Returns (ok, input_lufs, output_lufs). Output LUFS is
+    re-measured only if the caller asks via a second measure call;
+    here we return the measured input LUFS and None for output
+    (cheap path). Raises RenderCancelled when cancelled.
     """
     ff = find_ffmpeg(ffmpeg)
-    if measured is None:
-        measured = loudnorm_measure(src, log=log, ffmpeg=ffmpeg)
+    if control is not None:
+        control.check()
+    cache_path = None
+    if cache_dir:
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_path = os.path.join(
+                cache_dir, _norm_cache_key(src, fast) + ".m4a")
+            if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+                shutil.copyfile(cache_path, dst)
+                log(f"  cache: pakai hasil normalize sebelumnya: "
+                    f"{os.path.basename(src)}")
+                return True, None, None
+        except Exception as e:
+            log(f"  cache: tidak bisa dipakai ({e})")
+            cache_path = None
+    if fast:
+        # Single pass: no measure step, no measured_* args.
+        measured = None
+    elif measured is None:
+        measured = loudnorm_measure(src, log=log, ffmpeg=ffmpeg,
+                                    control=control)
     base = (f"loudnorm=I={LOUDNESS_TARGET_I}:TP={LOUDNESS_TARGET_TP}:"
             f"LRA={LOUDNESS_TARGET_LRA}:linear=true")
     if measured is not None:
         base += ":" + measured.to_filter_args()
-    for resampler in ("soxr", None):
+    # Best: soxr first, default resampler as fallback. Fast: default
+    # resampler straight away (soxr is the slowest link in the chain).
+    resamplers = (None,) if fast else ("soxr", None)
+    for resampler in resamplers:
+        if control is not None:
+            control.check()
         if resampler:
             af = f"aresample={AUDIO_RATE}:resampler={resampler},{base}"
         else:
@@ -515,8 +697,13 @@ def loudnorm_encode_file(
         cmd = [ff, "-hide_banner", "-y", "-i", src, "-vn",
                "-af", af, "-c:a", "aac", "-b:a", AUDIO_BITRATE,
                "-ac", "2", dst]
-        r = _run(cmd, log)
+        r = _run(cmd, log, control=control)
         if r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+            if cache_path:
+                try:
+                    shutil.copyfile(dst, cache_path)
+                except Exception:
+                    pass
             return True, (measured.input_i if measured else None), None
         log(f"  encode failed (resampler={resampler}), retrying" if resampler
             else "  encode failed with default resampler")
@@ -524,7 +711,8 @@ def loudnorm_encode_file(
 
 
 def encode_audio_aac(src: str, dst: str, log: LogFn = _noop_log,
-                     ffmpeg: Optional[str] = None) -> bool:
+                     ffmpeg: Optional[str] = None,
+                     control: Optional[RenderControl] = None) -> bool:
     """Plain WAV/FLAC -> AAC 320k 48kHz stereo (no loudnorm)."""
     ff = find_ffmpeg(ffmpeg)
     for resampler in ("soxr", None):
@@ -532,7 +720,7 @@ def encode_audio_aac(src: str, dst: str, log: LogFn = _noop_log,
               else f"aresample={AUDIO_RATE}")
         cmd = [ff, "-hide_banner", "-y", "-i", src, "-vn", "-af", af,
                "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ac", "2", dst]
-        if _run(cmd, log).returncode == 0 and os.path.isfile(dst):
+        if _run(cmd, log, control=control).returncode == 0 and os.path.isfile(dst):
             return True
     return False
 
@@ -543,11 +731,16 @@ def encode_audio_aac(src: str, dst: str, log: LogFn = _noop_log,
 
 def build_audio_single(src: str, workdir: str, log: LogFn = _noop_log,
                        ffmpeg: Optional[str] = None,
-                       normalize: bool = True) -> Tuple[Optional[str], float]:
+                       normalize: bool = True,
+                       fast: bool = False,
+                       control: Optional[RenderControl] = None,
+                       cache_dir: Optional[str] = None,
+                       ) -> Tuple[Optional[str], float]:
     """
     Single-file audio -> prepared audio file (AAC .m4a, or the original
     MP3 itself when copying). Returns (prepared_path, duration).
-    WAV/FLAC: loudnorm dual-pass (default) -> AAC 320k 48kHz stereo.
+    WAV/FLAC: loudnorm (dual-pass by default, single-pass when
+    fast=True) -> AAC 320k 48kHz stereo.
     MP3: -c:a copy by default (avoid double lossy encode); the caller
     muxes it directly. Set normalize=False + force re-encode only via
     the GUI option (not used by default).
@@ -560,19 +753,24 @@ def build_audio_single(src: str, workdir: str, log: LogFn = _noop_log,
         return src, dur
     dst = os.path.join(workdir, "audio_single.m4a")
     if normalize:
-        ok, in_lufs, _ = loudnorm_encode_file(src, dst, log=log, ffmpeg=ffmpeg)
+        ok, in_lufs, _ = loudnorm_encode_file(
+            src, dst, log=log, ffmpeg=ffmpeg, fast=fast,
+            control=control, cache_dir=cache_dir)
         if ok:
-            log(f"Audio single: WAV/FLAC loudnorm {in_lufs} -> -14 LUFS, AAC 320k")
+            mode = "cepat (1 pass)" if fast else "dual-pass"
+            log(f"Audio single: WAV/FLAC loudnorm {mode} "
+                f"{in_lufs} -> -14 LUFS, AAC 320k")
             return dst, dur
         log("Audio single: loudnorm gagal, fallback encode AAC biasa")
-    if encode_audio_aac(src, dst, log=log, ffmpeg=ffmpeg):
+    if encode_audio_aac(src, dst, log=log, ffmpeg=ffmpeg, control=control):
         return dst, dur
     return None, dur
 
 
 def concat_aac_copy(inputs: Sequence[str], dst: str,
                     log: LogFn = _noop_log,
-                    ffmpeg: Optional[str] = None) -> bool:
+                    ffmpeg: Optional[str] = None,
+                    control: Optional[RenderControl] = None) -> bool:
     """Concat AAC (.m4a) intermediates with the concat demuxer, -c copy."""
     ff = find_ffmpeg(ffmpeg)
     list_path = os.path.join(os.path.dirname(dst) or ".", "concat_list.txt")
@@ -582,7 +780,7 @@ def concat_aac_copy(inputs: Sequence[str], dst: str,
             f.write(f"file '{esc}'\n")
     cmd = [ff, "-hide_banner", "-y", "-f", "concat", "-safe", "0",
            "-i", list_path, "-c", "copy", dst]
-    r = _run(cmd, log)
+    r = _run(cmd, log, control=control)
     return r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0
 
 
@@ -590,37 +788,110 @@ def build_audio_folder(ordered_files: Sequence[str], workdir: str,
                        log: LogFn = _noop_log,
                        ffmpeg: Optional[str] = None,
                        progress: Optional[Callable[[int, int, str], None]] = None,
+                       fast: bool = False,
+                       control: Optional[RenderControl] = None,
+                       workers: Optional[int] = None,
+                       cache_dir: Optional[str] = None,
                        ) -> Tuple[Optional[str], float, List[Tuple[str, Optional[float]]]]:
     """
-    Folder audio: normalize EACH file individually (dual-pass loudnorm,
-    -14 LUFS / -1 dBTP, soxr 48kHz, AAC 320k, one-by-one, best quality),
-    then concat the AAC intermediates with -c copy (no 2nd lossy encode).
-    Hard cut between files, no gap/crossfade.
+    Folder audio: normalize EACH file individually (loudnorm
+    -14 LUFS / -1 dBTP, AAC 320k, one-by-one, best quality by
+    default), then concat the AAC intermediates with -c copy
+    (no 2nd lossy encode). Hard cut between files, no gap/crossfade.
+
+    Speed (v1.1): files are encoded in parallel (default up to 4
+    workers, following the CPU count), and with fast=True each file
+    uses single-pass loudnorm instead of dual-pass. A cache_dir
+    reuses already-normalized results across renders. The output
+    order is always the input order, no matter how the workers
+    finish. Raises RenderCancelled when cancelled.
     Returns (combined_audio_path, total_duration, [(file, input_lufs)]).
     """
     os.makedirs(workdir, exist_ok=True)
     total = 0.0
-    intermediates: List[str] = []
-    lufs_list: List[Tuple[str, Optional[float]]] = []
-    for i, src in enumerate(ordered_files, 1):
-        if progress:
-            progress(i, len(ordered_files), os.path.basename(src))
-        dur = probe_duration(src)
-        total += dur
-        dst = os.path.join(workdir, f"norm_{i:03d}.m4a")
-        ok, in_lufs, _ = loudnorm_encode_file(src, dst, log=log, ffmpeg=ffmpeg)
-        lufs_list.append((src, in_lufs))
+    durations: List[float] = []
+    for src in ordered_files:
+        durations.append(probe_duration(src))
+    total = sum(durations)
+    n = len(ordered_files)
+    if n == 0:
+        return None, 0.0, []
+
+    def _one(idx: int) -> Tuple[str, Optional[float], str]:
+        src = ordered_files[idx]
+        dst = os.path.join(workdir, f"norm_{idx + 1:03d}.m4a")
+        ok, in_lufs, _ = loudnorm_encode_file(
+            src, dst, log=log, ffmpeg=ffmpeg, fast=fast,
+            control=control, cache_dir=cache_dir)
         if not ok:
-            log(f"  GAGAL normalize: {os.path.basename(src)}")
+            raise RuntimeError(f"GAGAL normalize: {os.path.basename(src)}")
+        return dst, in_lufs, src
+
+    if workers is None:
+        workers = min(4, os.cpu_count() or 2)
+    workers = max(1, min(workers, n))
+
+    intermediates: List[str] = [""] * n
+    lufs_list: List[Tuple[str, Optional[float]]] = [("", None)] * n
+    done = 0
+    done_lock = threading.Lock()
+    failed: List[BaseException] = []
+
+    def _report(name: str) -> None:
+        nonlocal done
+        with done_lock:
+            done += 1
+            if progress:
+                progress(done, n, name)
+
+    if workers == 1:
+        for idx in range(n):
+            if control is not None:
+                control.check()
+            dst, in_lufs, src = _one(idx)
+            intermediates[idx] = dst
+            lufs_list[idx] = (src, in_lufs)
+            _report(os.path.basename(src))
+            log(f"  [{idx + 1}/{n}] {os.path.basename(src)} "
+                f"{durations[idx]:.1f}s LUFS in={in_lufs} -> -14")
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_one, idx): idx for idx in range(n)}
+            try:
+                for fut in concurrent.futures.as_completed(futs):
+                    idx = futs[fut]
+                    try:
+                        dst, in_lufs, src = fut.result()
+                    except BaseException as e:  # noqa: BLE001 — re-raised below
+                        failed.append(e)
+                        # Stop the still-running ffmpeg processes, but
+                        # do NOT set the cancel flag: a failure is a
+                        # failure, not a user cancel.
+                        if control is not None:
+                            control.terminate_running()
+                        break
+                    intermediates[idx] = dst
+                    lufs_list[idx] = (src, in_lufs)
+                    _report(os.path.basename(src))
+                    log(f"  [{idx + 1}/{n}] {os.path.basename(src)} "
+                        f"{durations[idx]:.1f}s LUFS in={in_lufs} -> -14")
+            finally:
+                for fut in futs:
+                    fut.cancel()
+        if failed:
+            first = failed[0]
+            if isinstance(first, RenderCancelled):
+                raise first
+            log(f"  {first}")
             return None, total, lufs_list
-        intermediates.append(dst)
-        log(f"  [{i}/{len(ordered_files)}] {os.path.basename(src)} "
-            f"{dur:.1f}s LUFS in={in_lufs} -> -14")
+    if control is not None:
+        control.check()
     combined = os.path.join(workdir, "audio_combined.m4a")
     if len(intermediates) == 1:
         shutil.copyfile(intermediates[0], combined)
         return combined, total, lufs_list
-    if concat_aac_copy(intermediates, combined, log=log, ffmpeg=ffmpeg):
+    if concat_aac_copy(intermediates, combined, log=log, ffmpeg=ffmpeg,
+                       control=control):
         return combined, total, lufs_list
     return None, total, lufs_list
 
@@ -631,7 +902,8 @@ def build_audio_folder(ordered_files: Sequence[str], workdir: str,
 
 def build_video_loop(video_path: str, audio_path: str, audio_duration: float,
                      output_path: str, log: LogFn = _noop_log,
-                     ffmpeg: Optional[str] = None) -> bool:
+                     ffmpeg: Optional[str] = None,
+                     control: Optional[RenderControl] = None) -> bool:
     """1-file video: seamless loop, -c:v copy, -t audio_duration, faststart."""
     ff = find_ffmpeg(ffmpeg)
     cmd = [ff, "-hide_banner", "-y",
@@ -641,7 +913,7 @@ def build_video_loop(video_path: str, audio_path: str, audio_duration: float,
            "-c:v", "copy", "-c:a", "copy",
            "-t", f"{audio_duration:.3f}",
            "-movflags", "+faststart", output_path]
-    r = _run(cmd, log)
+    r = _run(cmd, log, control=control)
     return r.returncode == 0 and os.path.isfile(output_path)
 
 
@@ -650,7 +922,8 @@ def build_video_folder(picked: Sequence[Tuple[str, float]],
                        output_path: str, workdir: str,
                        log: LogFn = _noop_log,
                        ffmpeg: Optional[str] = None,
-                       encoder: Optional[str] = None) -> bool:
+                       encoder: Optional[str] = None,
+                       control: Optional[RenderControl] = None) -> bool:
     """
     Folder video: picked = [(path, duration_used)] already trimmed so
     sum == audio_duration. If all clips share width/height/fps/codec,
@@ -678,7 +951,7 @@ def build_video_folder(picked: Sequence[Tuple[str, float]],
                "-c:v", "copy", "-c:a", "copy",
                "-t", f"{audio_duration:.3f}",
                "-movflags", "+faststart", output_path]
-        r = _run(cmd, log)
+        r = _run(cmd, log, control=control)
         return r.returncode == 0 and os.path.isfile(output_path)
 
     # Different specs -> re-encode via concat filter to common spec.
@@ -702,7 +975,7 @@ def build_video_folder(picked: Sequence[Tuple[str, float]],
            v_args + ["-c:a", "copy",
             "-t", f"{audio_duration:.3f}",
             "-movflags", "+faststart", output_path])
-    r = _run(cmd, log)
+    r = _run(cmd, log, control=control)
     return r.returncode == 0 and os.path.isfile(output_path)
 
 
