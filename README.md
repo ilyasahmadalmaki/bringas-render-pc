@@ -45,7 +45,7 @@ Tombol **Shuffle Preview** nunjukin urutan klip yang bakal dipakai (termasuk ber
 | Mode | Cara kerja |
 |---|---|
 | **1 File** | WAV/FLAC → loudnorm dual-pass **-14 LUFS / -1 dB** → AAC 320k, 48 kHz, stereo. MP3 → `-c:a copy` (hindari double lossy encode). |
-| **Folder** | Gabung **semua** file sampai habis. **Pin** maju ke depan sesuai urutan nge-pin (tidak terbatas, pin tidak pernah diacak). Yang tidak di-pin: alphabetical kalau Random OFF, shuffle murni kalau Random ON. Antar file: potong langsung, tanpa jeda. Tiap file di-normalize sendiri ke -14 LUFS lalu encode satu-satu ke AAC 320k. |
+| **Folder** | Gabung **semua** file sampai habis. Bisa **tambah banyak folder** (Browse / ＋ Tambah Folder — file digabung ke daftar, bukan mengganti). Daftar bisa di-scroll (scrollbar + mouse wheel). **Pin** maju ke depan sesuai urutan nge-pin (tidak terbatas, pin tidak pernah diacak). Yang tidak di-pin: alphabetical kalau Random OFF, shuffle murni kalau Random ON. Antar file: potong langsung, tanpa jeda. Tiap file di-normalize sendiri ke -14 LUFS lalu encode satu-satu ke AAC 320k. **Hapus dari Daftar** hanya hapus dari list sesi ini (file di disk aman, dan tidak balik lagi pas Refresh). **🎲 Pilih Acak**: isi jumlah lagu yang dipakai, misal 12 dari 20 — yang di-pin tidak pernah dibuang, sisanya diambil acak; lagu yang tidak terpilih hanya keluar dari daftar (Refresh untuk kembalikan semua). |
 
 ### 3 — Preview & Output
 
@@ -105,6 +105,13 @@ python3 test_logic.py
 ```
 
 Di Linux (VM dev) ffmpeg/ffprobe tersedia, jadi test integrasi (membuat klip + nada kecil, build audio folder, build video loop & folder, verify, GPU detect) ikut jalan. Di Windows, pastikan `ffmpeg.exe` / `ffprobe.exe` ketemu dulu sebelum Render.
+
+## 🎵 Daftar Audio v1.2 — multi-folder, scroll, pilih N lagu acak
+
+- Daftar audio sekarang bisa di-scroll (scrollbar di kanan + mouse wheel), jadi enak walau lagunya puluhan/ratusan.
+- **Multi-folder**: tombol **Browse…** dan **＋ Tambah Folder** menambahkan folder musik ke daftar — file-file digabung, daftar lama tidak hilang. **Refresh** memindai ulang semua folder yang pernah ditambahkan (file baru ikut masuk, file yang sudah tidak ada di disk dibuang).
+- **Hapus dari Daftar** (bisa pilih banyak sekaligus dengan Ctrl/Shift) hanya menghapus dari list sesi ini — file di disk aman, dan tidak akan muncul lagi pas Refresh/Tambah Folder selama aplikasi masih dibuka.
+- **🎲 Pilih Acak**: isi "Jumlah lagu dipakai" (kosong = semua), misal 12 dari 20 lagu — yang di-pin selalu dipertahankan di depan sesuai urutan pin, sisanya diambil acak. Lagu yang tidak terpilih hanya keluar dari daftar, Refresh mengembalikan semuanya untuk re-roll.
 
 ## ⚡ Mode Cepat & Batalkan (v1.1)
 

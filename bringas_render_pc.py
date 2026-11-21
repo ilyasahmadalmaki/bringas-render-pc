@@ -68,6 +68,13 @@ class App(tk.Tk):
         self.audio_files: list[str] = []
         self.pin_order: list[str] = []
         self.audio_lufs: dict[str, float | None] = {}
+        # Multi-folder: every folder ever added this session (Refresh
+        # re-scans all of them). Deleted files are remembered so a
+        # Refresh / Tambah Folder never brings them back this session.
+        self.audio_folders: list[str] = []
+        self.audio_deleted: set[str] = set()
+        # Pick N songs: empty = all songs.
+        self.pick_count_var = tk.StringVar(value="")
         # Duration cache (per session): ffprobe spawns a new process per
         # file, and every list/preview refresh used to re-probe ALL files
         # (one pin click = 2x files probes). Durations never change, so
@@ -154,8 +161,10 @@ class App(tk.Tk):
             canvas.itemconfig("main_window", width=event.width)
 
         def _on_mousewheel(event):
-            # The log textbox scrolls itself; everywhere else scrolls the window.
-            if getattr(event, "widget", None) is getattr(self, "log_text", None):
+            # The log textbox and the audio list scroll themselves;
+            # everywhere else scrolls the window.
+            w = getattr(event, "widget", None)
+            if w is getattr(self, "log_text", None) or w is getattr(self, "tree", None):
                 return
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
@@ -219,24 +228,42 @@ class App(tk.Tk):
         row2 = ttk.Frame(af); row2.pack(fill="x", pady=2)
         ttk.Entry(row2, textvariable=self.audio_folder, width=70).pack(side="left", fill="x", expand=True)
         ttk.Button(row2, text="Browse…", command=self._pick_audio_folder).pack(side="left", padx=4)
+        ttk.Button(row2, text="＋ Tambah Folder", command=self._add_audio_folder).pack(side="left", padx=4)
         ttk.Button(row2, text="Refresh", command=self._scan_audio_folder).pack(side="left", padx=4)
         ttk.Checkbutton(af, text="Acak (shuffle yang tidak di-pin)",
                         variable=self.random_var, command=self._refresh_audio_list).pack(side="left", padx=4)
 
         cols = ("file", "durasi", "format", "lufs", "pin")
-        self.tree = ttk.Treeview(af, columns=cols, show="headings", height=7)
+        tree_frame = ttk.Frame(af)
+        tree_frame.pack(fill="x", pady=4)
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical")
+        tree_scroll.pack(side="right", fill="y")
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
+                                 height=10, yscrollcommand=tree_scroll.set)
         for c, w, h in (("file", 380, "File"), ("durasi", 80, "Durasi"),
                         ("format", 70, "Format"), ("lufs", 90, "LUFS in"),
                         ("pin", 80, "Pin")):
             self.tree.heading(c, text=h)
             self.tree.column(c, width=w)
-        self.tree.pack(fill="x", pady=4)
+        self.tree.pack(side="left", fill="x", expand=True)
+        tree_scroll.config(command=self.tree.yview)
+        # Mouse wheel scrolls THIS list (not the whole window).
+        self.tree.bind("<MouseWheel>", self._on_tree_wheel)
         btns = ttk.Frame(af); btns.pack(fill="x")
         ttk.Button(btns, text="📌 Pin", command=self._pin_selected).pack(side="left", padx=2)
         ttk.Button(btns, text="❌ Hapus Pin", command=self._unpin_selected).pack(side="left", padx=2)
         ttk.Button(btns, text="🗑 Hapus dari Daftar (sesi ini saja)",
                    command=self._delete_selected).pack(side="left", padx=2)
         ttk.Button(btns, text="🔀 Acak", command=self._shuffle_audio).pack(side="left", padx=2)
+        # Pick N songs at random (pins are always kept).
+        pick_row = ttk.Frame(af); pick_row.pack(fill="x", pady=(6, 0))
+        tk.Label(pick_row, text="Jumlah lagu dipakai:", bg=PANEL, fg=FG).pack(side="left")
+        tk.Spinbox(pick_row, from_=1, to=999, width=6,
+                   textvariable=self.pick_count_var).pack(side="left", padx=4)
+        ttk.Button(pick_row, text="🎲 Pilih Acak",
+                   command=self._pick_random_songs).pack(side="left", padx=2)
+        tk.Label(pick_row, text="(kosong = semua lagu; yang di-pin tidak pernah dibuang)",
+                 bg=PANEL, fg=MUTED).pack(side="left", padx=4)
 
         # ---- Preview + Output ----
         pf = ttk.LabelFrame(root, text="3 — Preview & Output", padding=8)
@@ -325,8 +352,9 @@ class App(tk.Tk):
     def _pick_audio_folder(self):
         p = filedialog.askdirectory()
         if p:
-            self.audio_folder.set(p); self.audio_mode.set("folder")
-            self._scan_audio_folder(); self._refresh_preview()
+            # Browse adds the folder to the list (multi-folder);
+            # it never wipes the files already listed.
+            self._add_audio_folder(p)
 
     def _pick_out_folder(self):
         p = filedialog.askdirectory()
@@ -359,19 +387,77 @@ class App(tk.Tk):
                 path, ffprobe=self.ffprobe_path.get())
         return self._dur_cache[path]
 
-    def _scan_audio_folder(self):
-        folder = self.audio_folder.get()
+    def _on_tree_wheel(self, event):
+        # Wheel over the audio list scrolls the list itself; return
+        # "break" so the window-level wheel handler does not also fire.
+        self.tree.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    @staticmethod
+    def _scan_folder_files(folder: str) -> list[str]:
+        """Audio files in one folder, sorted by filename."""
         if not folder or not os.path.isdir(folder):
-            return
-        files = sorted(
+            return []
+        return sorted(
             (str(p) for p in Path(folder).iterdir()
              if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
             key=lambda p: os.path.basename(p).lower())
-        # Keep existing pins that still exist; drop pins for files gone.
-        self.pin_order = [p for p in self.pin_order if p in files]
-        self.audio_files = files
+
+    def _add_audio_folder(self, folder: str | None = None):
+        """Add one more music folder to the list (multi-folder).
+
+        Files are MERGED into the existing list, never replacing it.
+        Duplicates are skipped, and files the user deleted this
+        session are not brought back. The entry shows the folder
+        added most recently; the list is the source of truth.
+        """
+        if folder is None:
+            folder = filedialog.askdirectory()
+        if not folder:
+            return
+        folder = os.path.normpath(folder)
+        files = self._scan_folder_files(folder)
+        before = len(self.audio_files)
+        self.audio_files = fu.merge_file_lists(
+            self.audio_files, files, deleted=self.audio_deleted)
+        if folder not in self.audio_folders:
+            self.audio_folders.append(folder)
+        self.audio_folder.set(folder)
+        self.audio_mode.set("folder")
+        added = len(self.audio_files) - before
         self._refresh_audio_list()
-        self._log(f"Audio folder: {len(files)} file di {folder}")
+        self._log(f"Tambah folder: +{added} file dari {folder} "
+                  f"(total {len(self.audio_files)} file, "
+                  f"{len(self.audio_folders)} folder)")
+        self._refresh_preview()
+
+    def _scan_audio_folder(self):
+        """Refresh: re-scan ALL tracked folders.
+
+        Picks up new files added to any folder, drops files that no
+        longer exist on disk, and never brings back files the user
+        deleted from the list this session. Pins for surviving files
+        are kept.
+        """
+        folders = list(self.audio_folders)
+        if not folders and self.audio_folder.get():
+            folders = [self.audio_folder.get()]
+        if not folders:
+            return
+        merged: list[str] = []
+        for folder in folders:
+            merged = fu.merge_file_lists(
+                merged, self._scan_folder_files(folder),
+                deleted=self.audio_deleted)
+        # Drop files that vanished from disk (but keep the list order).
+        merged = [f for f in merged if os.path.isfile(f)]
+        # Keep pins that still exist; drop pins for files gone.
+        self.pin_order = [p for p in self.pin_order if p in merged]
+        new_count = len([f for f in merged if f not in self.audio_files])
+        self.audio_files = merged
+        self._refresh_audio_list()
+        self._log(f"Refresh audio: {len(merged)} file dari {len(folders)} folder"
+                  + (f" (+{new_count} baru)" if new_count else ""))
         self._refresh_preview()
 
     def _ordered_audio(self):
@@ -412,14 +498,56 @@ class App(tk.Tk):
             self._refresh_audio_list()
 
     def _delete_selected(self):
-        f = self._selected_audio()
-        if not f:
+        sel = list(self.tree.selection())
+        if not sel:
             return
-        # Session-only: list removal only, disk untouched.
-        self.audio_files, self.pin_order = fu.remove_from_list(
-            self.audio_files, f, self.pin_order)
-        self._log(f"Hapus dari daftar (sesi ini saja, file di disk aman): {os.path.basename(f)}")
+        # Session-only: list removal only, disk untouched. Deleted
+        # files are remembered, so Refresh / Tambah Folder will not
+        # bring them back this session (only an app restart does).
+        for f in sel:
+            self.audio_deleted.add(f)
+            self.audio_files, self.pin_order = fu.remove_from_list(
+                self.audio_files, f, self.pin_order)
+        names = ", ".join(os.path.basename(f) for f in sel[:3])
+        if len(sel) > 3:
+            names += f" … (+{len(sel) - 3})"
+        self._log(f"Hapus dari daftar ({len(sel)} lagu, sesi ini saja, "
+                  f"file di disk aman): {names}")
         self._refresh_audio_list()
+
+    def _pick_random_songs(self):
+        """Pick N songs at random from the list (🎲 Pilih Acak).
+
+        Pinned songs are NEVER dropped — they are always kept first,
+        in pin order; the remaining slots are a random sample of the
+        rest. The unpicked songs only leave the LIST (session-only,
+        file on disk is safe) — Refresh brings the full set back,
+        so the user can re-roll. Empty count = all songs.
+        """
+        raw = self.pick_count_var.get().strip()
+        if not raw:
+            self._scan_audio_folder()
+            self._log("Jumlah lagu kosong = semua lagu dipakai.")
+            return
+        try:
+            count = int(raw)
+        except ValueError:
+            messagebox.showwarning(
+                "Jumlah lagu", f"\"{raw}\" bukan angka. Isi jumlah lagu, "
+                               "atau kosongkan untuk semua lagu.")
+            return
+        ordered = self._ordered_audio()
+        if count <= 0 or count >= len(ordered):
+            self._log(f"Jumlah lagu {count} >= total {len(ordered)} — semua lagu dipakai.")
+            return
+        picked = fu.pick_random_songs(ordered, self.pin_order, count)
+        removed = len(ordered) - len(picked)
+        self.audio_files = picked
+        self._refresh_audio_list()
+        self._log(f"Pilih acak: {len(picked)} dari {len(ordered)} lagu "
+                  f"({len(self.pin_order)} pin + {len(picked) - len(self.pin_order)} acak), "
+                  f"{removed} lagu keluar dari daftar (Refresh untuk kembalikan).")
+        self._refresh_preview()
 
     def _shuffle_audio(self):
         self.random_var.set(True)
@@ -519,7 +647,10 @@ class App(tk.Tk):
             lines.append(f"Audio: 1 file — {os.path.basename(self.audio_file.get()) or '-'} ({audio_dur:.0f}s)")
         else:
             ordered = self._ordered_audio()
-            lines.append(f"Audio: folder — {len(ordered)} file, pin {len(self.pin_order)}, "
+            folders_txt = (f" dari {len(self.audio_folders)} folder"
+                           if self.audio_folders else "")
+            lines.append(f"Audio: folder — {len(ordered)} file{folders_txt}, "
+                         f"pin {len(self.pin_order)}, "
                          f"acak={'ON' if self.random_var.get() else 'OFF'} ({audio_dur:.0f}s)")
             if ordered:
                 lines.append("Urutan: " + " → ".join(os.path.basename(f) for f in ordered[:6])

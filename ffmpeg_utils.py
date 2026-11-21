@@ -466,6 +466,49 @@ def remove_from_list(files: Sequence[str], to_remove: str,
     return new_files, new_pins
 
 
+def merge_file_lists(existing: Sequence[str], new_files: Sequence[str],
+                     deleted: Sequence[str] = ()) -> List[str]:
+    """
+    Merge files from another folder into the list: keep the existing
+    order, append only files that are not already listed and were not
+    deleted by the user this session. Disk is never touched.
+    """
+    seen = set(existing)
+    skip = set(deleted or ())
+    out = list(existing)
+    for f in new_files:
+        if f not in seen and f not in skip:
+            seen.add(f)
+            out.append(f)
+    return out
+
+
+def pick_random_songs(ordered_files: Sequence[str],
+                      pin_order: Sequence[str],
+                      count: Optional[int],
+                      rng: Optional[random.Random] = None,
+                      ) -> List[str]:
+    """
+    Pick `count` songs out of the ordered list, at random.
+
+    Rules (locked by the user): pinned songs are NEVER dropped — they
+    always come first, in pin order. The remaining slots are filled
+    with a random sample of the unpinned files.
+    - count None / <= 0 / >= total -> all files (no-op).
+    - count <= number of pins -> just the pins (pins beat the count).
+    Returns the picked list, pins first.
+    """
+    files = list(ordered_files)
+    if not count or count <= 0 or count >= len(files):
+        return files
+    pinned = [f for f in pin_order if f in files]
+    if count <= len(pinned):
+        return pinned
+    rest = [f for f in files if f not in set(pinned)]
+    r = rng or random
+    return pinned + r.sample(rest, count - len(pinned))
+
+
 def pick_videos_until_duration(
     clips: Sequence[Tuple[str, float]],
     target_duration: float,

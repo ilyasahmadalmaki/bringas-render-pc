@@ -313,6 +313,53 @@ def test_norm_cache(tmp):
           len(os.listdir(cache)) == 2, str(os.listdir(cache)))
 
 
+def test_pick_random_songs():
+    files = [f"s{i}.mp3" for i in range(1, 21)]  # 20 lagu
+    pins = ["s3.mp3", "s7.mp3"]
+    # 12 dari 20: 2 pin + 10 acak
+    out = fu.pick_random_songs(files, pins, 12, rng=random.Random(42))
+    check("pick: jumlah tepat 12", len(out) == 12, str(out))
+    check("pick: pin tidak pernah dibuang, di depan sesuai urutan pin",
+          out[:2] == pins, str(out))
+    check("pick: semua dari list asli, tanpa duplikat",
+          len(set(out)) == 12 and all(f in files for f in out), str(out))
+    check("pick: seed sama -> hasil sama",
+          out == fu.pick_random_songs(files, pins, 12, rng=random.Random(42)))
+    check("pick: seed beda -> (hampir pasti) hasil beda",
+          out != fu.pick_random_songs(files, pins, 12, rng=random.Random(7)),
+          str(out))
+    # count >= total -> semua; count 0/None -> semua
+    check("pick: count >= total -> semua file",
+          fu.pick_random_songs(files, pins, 20) == files)
+    check("pick: count 25 (> total) -> semua file",
+          fu.pick_random_songs(files, pins, 25) == files)
+    check("pick: count 0 -> semua file",
+          fu.pick_random_songs(files, pins, 0) == files)
+    check("pick: count None -> semua file",
+          fu.pick_random_songs(files, pins, None) == files)
+    # Pin lebih banyak dari count -> semua pin tetap dipertahankan
+    many_pins = [f"s{i}.mp3" for i in range(1, 6)]
+    check("pick: pin (5) > count (3) -> semua pin dipertahankan",
+          fu.pick_random_songs(files, many_pins, 3) == many_pins)
+    # Tanpa pin: murni sample acak
+    out2 = fu.pick_random_songs(files, [], 5, rng=random.Random(1))
+    check("pick: tanpa pin -> 5 acak dari list",
+          len(out2) == 5 and all(f in files for f in out2), str(out2))
+
+
+def test_merge_file_lists():
+    base = ["a.mp3", "b.mp3"]
+    out = fu.merge_file_lists(base, ["b.mp3", "c.mp3", "d.mp3"])
+    check("merge: urutan lama dipertahankan, baru nempel di belakang",
+          out == ["a.mp3", "b.mp3", "c.mp3", "d.mp3"], str(out))
+    check("merge: duplikat tidak dobel", len(out) == len(set(out)))
+    out2 = fu.merge_file_lists(base, ["x.mp3", "a.mp3"], deleted=["x.mp3"])
+    check("merge: file yang dihapus sesi ini tidak balik lagi",
+          out2 == ["a.mp3", "b.mp3"], str(out2))
+    check("merge: list kosong + folder baru",
+          fu.merge_file_lists([], ["m.mp3", "n.mp3"]) == ["m.mp3", "n.mp3"])
+
+
 def test_cancel_run():
     if not shutil_which("ffmpeg"):
         print("SKIP  cancel run: ffmpeg tidak tersedia")
@@ -419,6 +466,8 @@ def main():
         test_integration_ffmpeg(tmp)
         test_fast_encode(tmp)
         test_norm_cache(tmp)
+        test_pick_random_songs()
+        test_merge_file_lists()
         test_cancel_run()
         test_parallel_folder_fast(tmp)
         test_cancel_folder(tmp)
