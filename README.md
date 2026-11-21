@@ -113,6 +113,16 @@ Di Linux (VM dev) ffmpeg/ffprobe tersedia, jadi test integrasi (membuat klip + n
 - **Hapus dari Daftar** (bisa pilih banyak sekaligus dengan Ctrl/Shift) hanya menghapus dari list sesi ini — file di disk aman, dan tidak akan muncul lagi pas Refresh/Tambah Folder selama aplikasi masih dibuka.
 - **🎲 Pilih Acak**: isi "Jumlah lagu dipakai" (kosong = semua), misal 12 dari 20 lagu — yang di-pin selalu dipertahankan di depan sesuai urutan pin, sisanya diambil acak. Lagu yang tidak terpilih hanya keluar dari daftar, Refresh mengembalikan semuanya untuk re-roll.
 
+## 🕐 Timestamp Otomatis (v1.3, opsional)
+
+- Checkbox **"Timestamp otomatis"** di seksi Audio (default NYALA, bisa dimatikan). Kalau nyala, setiap render audio folder yang sukses ikut menulis file `<nama-output>_timestamps.txt` di sebelah file `.mp4`-nya, isinya chapters siap copy-paste ke deskripsi YouTube:
+  ```
+  0:00 A Thousand Miles Away
+  4:33 Electric Feeling
+  9:03 Into Your Light
+  ```
+  Urutan dan durasinya ngikutin hasil render final (termasuk pin dan 🎲 Pilih Acak). Format `M:SS`, atau `H:MM:SS` kalau totalnya di atas 1 jam. Audio 1 file tidak dibuatkan file timestamp (1 lagu tidak butuh chapters). Kalau render dibatalkan/gagal, file timestamp tidak dibuat.
+
 ## ⚡ Mode Cepat & Batalkan (v1.1)
 
 - **Mode Cepat** (checkbox di seksi Audio, default MATI): normalize pakai single-pass loudnorm — file cuma dibaca 1x, kira-kira 2x lebih cepat dari dual-pass. Harganya: loudness bisa meleset ~1-3 LUFS dari target -14 dan true peak kurang ketat. Default tetap dual-pass (kualitas terbaik).

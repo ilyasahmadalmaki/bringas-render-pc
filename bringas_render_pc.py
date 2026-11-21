@@ -62,6 +62,9 @@ class App(tk.Tk):
         # Mode Cepat: single-pass loudnorm (~2x lebih cepat, loudness
         # kurang presisi). Default OFF — kualitas terbaik tetap default.
         self.fast_mode_var = tk.BooleanVar(value=False)
+        # Timestamp otomatis: file chapters (.txt) untuk deskripsi
+        # YouTube. Opsional — user bisa matikan. Default ON.
+        self.timestamps_var = tk.BooleanVar(value=True)
         # Handle proses render yang sedang jalan (untuk Batalkan).
         self.render_control: fu.RenderControl | None = None
         # Audio folder list state (in-memory only; delete = session-only)
@@ -222,6 +225,8 @@ class App(tk.Tk):
                         variable=self.normalize_single).pack(anchor="w")
         ttk.Checkbutton(af, text="Mode Cepat: normalize 1 pass (kira-kira 2x lebih cepat, loudness kurang presisi)",
                         variable=self.fast_mode_var).pack(anchor="w")
+        ttk.Checkbutton(af, text="Timestamp otomatis: buat file chapters (.txt) untuk deskripsi YouTube",
+                        variable=self.timestamps_var).pack(anchor="w")
         ttk.Radiobutton(af, text="Folder (gabung semua file sampai habis)",
                         variable=self.audio_mode, value="folder",
                         command=self._refresh_preview).pack(anchor="w")
@@ -706,6 +711,7 @@ class App(tk.Tk):
 
             # ---- Audio ----
             log("Langkah 1/2: siapkan audio…")
+            audio_entries: list[tuple[str, float]] | None = None
             if self.audio_mode.get() == "file":
                 src = self.audio_file.get()
                 if not src:
@@ -718,6 +724,9 @@ class App(tk.Tk):
                 ordered = self._ordered_audio()
                 if not ordered:
                     raise ValueError("Folder audio kosong / belum di-scan.")
+                # Urutan + durasi final (sudah termasuk pin & Pilih Acak)
+                # — dipakai untuk file timestamp otomatis.
+                audio_entries = [(f, self._dur(f)) for f in ordered]
                 audio_path, audio_dur, lufs = fu.build_audio_folder(
                     ordered, workdir, log=log, ffmpeg=ff,
                     fast=fast, control=ctrl, cache_dir=cache_dir,
@@ -757,6 +766,18 @@ class App(tk.Tk):
                                            encoder=encoder, control=ctrl)
             if not ok:
                 raise RuntimeError("ffmpeg gagal membuat video output.")
+
+            # Timestamp otomatis (opsional, bisa dimatikan di checkbox):
+            # file chapters di sebelah output, siap copy-paste ke
+            # deskripsi YouTube. Hanya untuk audio folder (banyak lagu);
+            # 1 lagu tidak butuh chapters. Ditulis hanya kalau render
+            # sukses — batal/gagal tidak menghasilkan file ini.
+            if self.timestamps_var.get() and audio_entries:
+                ts_path = os.path.splitext(out_path)[0] + "_timestamps.txt"
+                try:
+                    fu.write_timestamps_file(ts_path, audio_entries, log=log)
+                except Exception as e:
+                    log(f"  Timestamp gagal ditulis ({e}) — render tetap lanjut.")
 
             # No output verification (user's call: "sikat aja") — ffmpeg
             # exiting 0 + the file existing is enough; a probe quirk

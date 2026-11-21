@@ -509,6 +509,54 @@ def pick_random_songs(ordered_files: Sequence[str],
     return pinned + r.sample(rest, count - len(pinned))
 
 
+# --------------------------------------------------------------------------
+# Timestamps / chapters otomatis (untuk deskripsi YouTube)
+# --------------------------------------------------------------------------
+
+def format_timestamp(seconds: float) -> str:
+    """Detik -> 'M:SS' (atau 'H:MM:SS' kalau >= 1 jam), gaya YouTube."""
+    total = max(0, int(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def chapter_title(path: str) -> str:
+    """Judul lagu dari nama file: tanpa ekstensi, '_' jadi spasi."""
+    return Path(path).stem.replace("_", " ").strip()
+
+
+def build_chapters_text(entries: Sequence[Tuple[str, float]]) -> str:
+    """entries: [(path_lagu, durasi_detik)] dalam urutan render ->
+    teks chapters siap copy-paste ke deskripsi YouTube:
+
+        0:00 A Thousand Miles Away
+        4:33 Electric Feeling
+        ...
+
+    Start time tiap lagu = jumlah durasi lagu-lagu sebelumnya.
+    """
+    lines = []
+    t = 0.0
+    for path, dur in entries:
+        lines.append(f"{format_timestamp(t)} {chapter_title(path)}")
+        t += dur
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def write_timestamps_file(path: str,
+                          entries: Sequence[Tuple[str, float]],
+                          log: LogFn = _noop_log) -> str:
+    """Tulis file chapters ke `path`, kembalikan isi teksnya."""
+    text = build_chapters_text(entries)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    log(f"Timestamp ditulis: {path} ({len(entries)} lagu)")
+    return text
+
+
 def pick_videos_until_duration(
     clips: Sequence[Tuple[str, float]],
     target_duration: float,

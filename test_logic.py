@@ -360,6 +360,44 @@ def test_merge_file_lists():
           fu.merge_file_lists([], ["m.mp3", "n.mp3"]) == ["m.mp3", "n.mp3"])
 
 
+def test_format_timestamp():
+    check("timestamp: 0 -> 0:00", fu.format_timestamp(0) == "0:00")
+    check("timestamp: 5 -> 0:05", fu.format_timestamp(5) == "0:05")
+    check("timestamp: 65 -> 1:05", fu.format_timestamp(65) == "1:05")
+    check("timestamp: 273.2 -> 4:33", fu.format_timestamp(273.2) == "4:33")
+    check("timestamp: 3600 -> 1:00:00", fu.format_timestamp(3600) == "1:00:00")
+    check("timestamp: 3661 -> 1:01:01", fu.format_timestamp(3661) == "1:01:01")
+    check("timestamp: negatif -> 0:00", fu.format_timestamp(-3) == "0:00")
+
+
+def test_build_chapters_text():
+    entries = [("A THOUSAND MILES AWAY.mp3", 273.2),
+               ("ELECTRIC FEELING.mp3", 269.9),
+               ("INTO YOUR LIGHT.mp3", 262.2)]
+    text = fu.build_chapters_text(entries)
+    check("chapters: baris pertama 0:00",
+          text.splitlines()[0] == "0:00 A THOUSAND MILES AWAY",
+          text)
+    check("chapters: lagu ke-2 mulai di 4:33 (273.2s)",
+          text.splitlines()[1] == "4:33 ELECTRIC FEELING", text)
+    check("chapters: lagu ke-3 mulai di 9:03 (273.2+269.9=543.1s)",
+          text.splitlines()[2] == "9:03 INTO YOUR LIGHT", text)
+    check("chapters: judul '_' jadi spasi, tanpa ekstensi",
+          fu.chapter_title("my_song-title_v2.wav") == "my song-title v2")
+    check("chapters: list kosong -> teks kosong",
+          fu.build_chapters_text([]) == "")
+
+
+def test_write_timestamps_file(tmp):
+    entries = [("lagu_a.mp3", 120.0), ("lagu_b.mp3", 180.0)]
+    p = os.path.join(tmp, "out_timestamps.txt")
+    text = fu.write_timestamps_file(p, entries)
+    check("timestamps file: tertulis", os.path.isfile(p))
+    check("timestamps file: isi benar",
+          Path(p).read_text(encoding="utf-8") == "0:00 lagu a\n2:00 lagu b\n",
+          repr(text))
+
+
 def test_cancel_run():
     if not shutil_which("ffmpeg"):
         print("SKIP  cancel run: ffmpeg tidak tersedia")
@@ -468,6 +506,9 @@ def main():
         test_norm_cache(tmp)
         test_pick_random_songs()
         test_merge_file_lists()
+        test_format_timestamp()
+        test_build_chapters_text()
+        test_write_timestamps_file(tmp)
         test_cancel_run()
         test_parallel_folder_fast(tmp)
         test_cancel_folder(tmp)
