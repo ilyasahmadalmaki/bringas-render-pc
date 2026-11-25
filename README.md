@@ -113,6 +113,15 @@ Di Linux (VM dev) ffmpeg/ffprobe tersedia, jadi test integrasi (membuat klip + n
 - **Hapus dari Daftar** (bisa pilih banyak sekaligus dengan Ctrl/Shift) hanya menghapus dari list sesi ini — file di disk aman, dan tidak akan muncul lagi pas Refresh/Tambah Folder selama aplikasi masih dibuka.
 - **🎲 Pilih Acak**: isi "Jumlah lagu dipakai" (kosong = semua), misal 12 dari 20 lagu — yang di-pin selalu dipertahankan di depan sesuai urutan pin, sisanya diambil acak. Lagu yang tidak terpilih hanya keluar dari daftar, Refresh mengembalikan semuanya untuk re-roll.
 
+## 🐛 Fix: audio live 96 kHz → 48 kHz (v1.3.1, 2026-11-25)
+
+- **Bug:** semua audio yang lewat loudnorm (WAV/FLAC file tunggal + semua audio folder) keluar sebagai AAC **96 kHz**, bukan 48 kHz seperti spek — filter loudnorm menaikkan sample rate 2x untuk ukur true peak, dan tidak ada yang menurunkannya lagi. Saat file itu di-live-kan (streamflow kirim `-c:a copy` ke RTMP), YouTube Live menolaknya: peringatan *"Frekuensi sampel saat ini adalah 0"* (YouTube cuma terima 44,1/48 kHz).
+- **Perbaikan:** rantai filter loudnorm sekarang selalu diakhiri `aresample=48000`, jadi output AAC kembali **48 kHz** di semua jalur (dual-pass maupun Mode Cepat). Jalur MP3 copy tidak kena bug ini (44,1 kHz tetap).
+- **File yang sudah terlanjur di-render** tidak perlu render ulang — perbaiki audionya saja (video tidak disentuh):
+  ```bat
+  ffmpeg -i "Night Drive Vibes.mp4" -c:v copy -c:a aac -b:a 320k -ar 48000 "Night Drive Vibes_48k.mp4"
+  ```
+
 ## 🕐 Timestamp Otomatis (v1.3, opsional)
 
 - Checkbox **"Timestamp otomatis"** di seksi Audio (default NYALA, bisa dimatikan). Kalau nyala, setiap render audio folder yang sukses ikut menulis file `<nama-output>_timestamps.txt` di sebelah file `.mp4`-nya, isinya chapters siap copy-paste ke deskripsi YouTube:

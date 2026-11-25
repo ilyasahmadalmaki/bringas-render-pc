@@ -777,14 +777,23 @@ def loudnorm_encode_file(
         base += ":" + measured.to_filter_args()
     # Best: soxr first, default resampler as fallback. Fast: default
     # resampler straight away (soxr is the slowest link in the chain).
+    #
+    # CRITICAL (bug 2026-11-25): loudnorm upsamples internally for
+    # true-peak measurement (2x -> 96 kHz here) and the OUTPUT keeps
+    # that upsampled rate. Without a trailing aresample the AAC came
+    # out at 96 kHz instead of the locked 48 kHz — and YouTube Live
+    # rejects it ("Frekuensi sampel saat ini adalah 0", it only
+    # accepts 44.1/48 kHz). So the chain always ends with
+    # aresample=48000 to force the output back down to 48 kHz.
     resamplers = (None,) if fast else ("soxr", None)
     for resampler in resamplers:
         if control is not None:
             control.check()
         if resampler:
-            af = f"aresample={AUDIO_RATE}:resampler={resampler},{base}"
+            af = (f"aresample={AUDIO_RATE}:resampler={resampler},{base},"
+                  f"aresample={AUDIO_RATE}")
         else:
-            af = f"aresample={AUDIO_RATE},{base}"
+            af = f"aresample={AUDIO_RATE},{base},aresample={AUDIO_RATE}"
         cmd = [ff, "-hide_banner", "-y", "-i", src, "-vn",
                "-af", af, "-c:a", "aac", "-b:a", AUDIO_BITRATE,
                "-ac", "2", dst]

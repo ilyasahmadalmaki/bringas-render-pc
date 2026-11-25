@@ -144,6 +144,11 @@ def test_integration_ffmpeg(tmp):
     if audio_out:
         d = fu.probe_duration(audio_out)
         check("integration: audio gabungan durasi ~5s", abs(d - 5.0) < 0.6, f"d={d}")
+        # Best mode (dual-pass loudnorm) juga wajib keluar 48 kHz,
+        # bukan 96 kHz hasil upsample loudnorm (bug 2026-11-25).
+        rate = fu.probe_specs(audio_out).sample_rate
+        check("integration: audio gabungan sample rate 48000",
+              rate == 48000, f"rate={rate}")
 
     # Video folder build with picked clips (need 5s audio)
     picked, ptotal = fu.pick_videos_until_duration(clips, 5.0, rng=random.Random(0))
@@ -286,6 +291,11 @@ def test_fast_encode(tmp):
     if ok:
         d = fu.probe_duration(dst)
         check("fast: output durasi ~2s", abs(d - 2.0) < 0.6, f"d={d}")
+        # Bug 2026-11-25: loudnorm upsampled the output to 96 kHz and
+        # YouTube Live rejected it (sample rate 0). Output WAJIB 48k.
+        rate = fu.probe_specs(dst).sample_rate
+        check("fast: sample rate output 48000 (bukan 96000)",
+              rate == 48000, f"rate={rate}")
 
 
 def test_norm_cache(tmp):
@@ -396,6 +406,24 @@ def test_write_timestamps_file(tmp):
     check("timestamps file: isi benar",
           Path(p).read_text(encoding="utf-8") == "0:00 lagu a\n2:00 lagu b\n",
           repr(text))
+
+
+def test_single_wav_sample_rate(tmp):
+    if not shutil_which("ffmpeg"):
+        print("SKIP  single WAV rate: ffmpeg tidak tersedia")
+        return
+    src = os.path.join(tmp, "single.wav")
+    _make_tone(src, 2)
+    work = os.path.join(tmp, "work_single")
+    os.makedirs(work, exist_ok=True)
+    # WAV 48kHz input -> loudnorm dual-pass (best) -> AAC harus 48kHz.
+    out, dur = fu.build_audio_single(src, work, log=lambda m: None)
+    check("single WAV: build ok", out is not None and os.path.isfile(out),
+          str(out))
+    if out:
+        rate = fu.probe_specs(out).sample_rate
+        check("single WAV: sample rate output 48000 (bukan 96000)",
+              rate == 48000, f"rate={rate}")
 
 
 def test_cancel_run():
@@ -509,6 +537,7 @@ def main():
         test_format_timestamp()
         test_build_chapters_text()
         test_write_timestamps_file(tmp)
+        test_single_wav_sample_rate(tmp)
         test_cancel_run()
         test_parallel_folder_fast(tmp)
         test_cancel_folder(tmp)
